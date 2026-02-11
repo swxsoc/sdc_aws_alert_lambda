@@ -1,0 +1,7 @@
+pytest
+pytest-astropy 
+pytest-cov
+ruff
+swxsoc @ git+https://github.com/swxsoc/swxsoc.git
+gcn_kafka
+pandas==2.2.3

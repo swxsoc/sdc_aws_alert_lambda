@@ -1,0 +1,3 @@
+swxsoc @ git+https://github.com/swxsoc/swxsoc.git
+pandas==2.2.3
+gcn_kafka
