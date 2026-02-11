@@ -7,7 +7,7 @@ import json
 import re
 
 from typing import Any, Dict
-from swxsoc.logger import log
+from swxsoc import log
 
 import pandas as pd
 import boto3
