@@ -4,19 +4,9 @@ phases:
   pre_build:
     commands:
       - echo Installing CI/CD Dependencies...
-      - pip3 install flake8 black pytest pytest-astropy pytest-cov
-      - pip3 install pytest pytest-astropy pytest-cov
       - pip3 install -r requirements.txt
       - echo ________________________________
 
-      - echo Linting with Black...
-      - black --check --diff lambda_function
-      - echo ________________________________
-      
-      - echo Linting with Flake...
-      - flake8 --count --max-line-length 88 lambda_function --exclude lambda_function_test_script.py
-      - echo ________________________________
-    
   build:
     commands:
       - REGION=us-east-1

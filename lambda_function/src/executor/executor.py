@@ -78,17 +78,13 @@ class Executor:
         try:
             # Initialize Grafana API Key
             session = boto3.session.Session()
-            env_to_ids = {
-                "GCN_CLIEND_SECRET": "gcn_client_secret",
-                "GCN_CLIENT_ID": "gcn_client_id",
-            }
-            for key, value in env_to_ids.items():
-                secret_arn = os.getenv(key, None)
-                client = session.client(service_name="secretsmanager")
-                response = client.get_secret_value(SecretId=secret_arn)
-                secret = json.loads(response["SecretString"])
+            client = session.client(service_name="secretsmanager", region="us-east-1")
+
+            response = client.get_secret_value(SecretId="gdc_test_kafka")
+            secret = json.loads(response["SecretString"])
+            for value in ["GDC_TEST_CLIEND_ID", "GDC_TEST_CLIENT_SECRET"]:
                 os.environ[value.upper()] = secret[value]
-                log.info(f"{value} API Key loaded")
+                log.info(f"{value} secret loaded successfully")
         except Exception as e:
             log.error("Error reading secrets", exc_info=True)
 
@@ -107,13 +103,13 @@ class Executor:
         Get latest GOES XRS data and generate kafka messages.
         """
         DOMAIN = "test.gcn.nasa.gov"
-        CLIENT_ID = os.getenv("GCN_CLIENT_ID")
-        CLIEND_SECRET = os.getenv("GCN_CLIEND_SECRET")
+        CLIENT_ID = os.getenv("GDC_TEST_CLIEND_ID")
+        CLIEND_SECRET = os.getenv("GDC_TEST_CLIENT_SECRET")
         producer = Producer(
             client_id=CLIENT_ID, client_secret=CLIEND_SECRET, domain=DOMAIN
         )
 
-        def produce_alert(
+        def produce_alert_msg(
             topic, description: str, alert_type: str, alert_datetime: datetime
         ):
             data = {
@@ -127,6 +123,18 @@ class Executor:
             # JSON data converted to byte string format
             data_json = json.dumps(data).encode()
             producer.produce(topic, data_json)
+            producer.flush()
+
+        def produce_flux_msg(latest_time: datetime, latest_flux: float, kind: str):
+            if kind not in ["long", "short"]:
+                raise ValueError("kind must be 'long' or 'short'")
+            data = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "alert_datetime": latest_time.isoformat(),
+                "flux": latest_flux
+            }
+            data_json = json.dumps(data).encode()
+            producer.produce(f"gcn.notices.swxsoc.goes_xrs_flux{kind}", data_json)
             producer.flush()
 
         SEVERITIES = {
@@ -147,47 +155,47 @@ class Executor:
             goes_json_data["time_tag"] = pd.to_datetime(goes_json_data["time_tag"])
             goes_json_data.set_index("time_tag", inplace=True)
             goes_xrs_long = goes_json_data[goes_json_data["energy"] == "0.1-0.8nm"]
+            goes_xrs_short = goes_json_data[goes_json_data["energy"] == "0.05-0.4nm"]
+
             # Filter the data to include only rows where the time_tag is within the last 5 minutes
             utc_now = datetime.now(timezone.utc)
             five_minutes_ago = utc_now - timedelta(minutes=5)
             recent_data = goes_xrs_long[goes_xrs_long.index >= five_minutes_ago]
             old_data = goes_xrs_long[goes_xrs_long.index < five_minutes_ago]
-            average_new_flux = recent_data["flux"].mean()
-            latest_flux = recent_data["flux"].values[-1]
-            old_flux = old_data["flux"].values[-1]
+            if len(recent_data) > 0:
+                latest_flux = recent_data["flux"].values[-1]
+                latest_time = recent_data.index[-1]
+                log.info(f"Latest ({latest_time}) GOES XRS flux value  : {latest_flux}")
+                average_new_flux = recent_data["flux"].mean()
+                old_flux = old_data["flux"].values[-1]
 
-            # send the latest flux value to kafka topic
-            data = {
-                "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "alert_datetime": latest_flux.index.isoformat(),
-                "flux": latest_flux
-            }
-            data_json = json.dumps(data).encode()
-            producer.produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
-            producer.flush()
+                produce_flux_msg(latest_time, latest_flux, "long")
+                produce_flux_msg(latest_time, goes_xrs_short['flux'].values[-1], "short")
 
-            # check if the flux exceeded any severity threshold
-            if any(average_new_flux >= value for value in SEVERITIES.values()) and average_new_flux > old_flux:
-                for severity, threshold in SEVERITIES.items():
-                    if average_new_flux >= threshold and old_flux < threshold:
-                        log.info(f"New flux exceeds {severity} threshold")
-                        produce_alert(
-                            f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
-                            f"GOES XRS flux exceeded {severity} threshold",
-                            f"{severity} Flare Alert",
-                            utc_now,
-                        )
-            # check if the flux is now decreasing
-            if old_flux > average_new_flux:
-                for severity, threshold in SEVERITIES.items():
-                    if old_flux >= threshold and average_new_flux < threshold:
-                        log.info(f"Flux has decreased below {severity} threshold, {severity}alert is over")
-                        produce_alert(
-                            f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
-                            f"GOES XRS flux has decreased below {severity} threshold",
-                            f"{severity} Flare Alert End",
-                            utc_now,
-                        )
+                # check if the flux exceeded any severity threshold
+                if any(average_new_flux >= value for value in SEVERITIES.values()) and average_new_flux > old_flux:
+                    for severity, threshold in SEVERITIES.items():
+                        if average_new_flux >= threshold and old_flux < threshold:
+                            log.info(f"New flux exceeds {severity} threshold")
+                            produce_alert_msg(
+                                f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
+                                f"GOES XRS flux exceeded {severity} threshold",
+                                f"{severity} Flare Alert",
+                                utc_now,
+                            )
+                # check if the flux is now decreasing
+                if old_flux > average_new_flux:
+                    for severity, threshold in SEVERITIES.items():
+                        if old_flux >= threshold and average_new_flux < threshold:
+                            log.info(f"Flux has decreased below {severity} threshold, {severity}alert is over")
+                            produce_alert_msg(
+                                f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
+                                f"GOES XRS flux has decreased below {severity} threshold",
+                                f"{severity} Flare Alert End",
+                                utc_now,
+                            )
+            else:
+                log.info("No new GOES XRS data in the last 5 minutes")
 
         except Exception as e:
             log.error("Error importing GOES data to Timestream", exc_info=True)
