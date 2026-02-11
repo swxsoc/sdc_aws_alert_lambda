@@ -1,4 +1,4 @@
-# Executor Lambda Function
+# Alert Lambda Function
 
 Lambda function implementing an executor pattern to run scheduled tasks via CloudWatch Events/EventBridge rules. Each rule's name maps directly to its corresponding function, enabling independent scheduling.
 
@@ -15,7 +15,7 @@ Lambda function implementing an executor pattern to run scheduled tasks via Clou
 - AWS Lambda
 - CloudWatch Events/EventBridge
 - AWS Secrets Manager for credentials
-- Python 3.9+
+- Python 3.10+
 
 ### Environment Variables
 - `SECRET_ARN`: Secrets Manager ARN containing required credentials
@@ -30,26 +30,14 @@ Lambda function implementing an executor pattern to run scheduled tasks via Clou
 
 ## Included Functions
 
-### import_GOES_data_to_timestream
-Processes GOES X-ray satellite data:
-- Fetches 3-day X-ray flux data from NOAA
-- Filters last 24 hours
-- Handles both wavelength channels (0.05-0.4nm, 0.1-0.8nm)
-- Stores in Amazon Timestream
+### goes_xrs_alert_stream
+Get the latest GOES XRS data. Send the following kafka messages to [GCN](https://gcn.nasa.gov/)
 
-### create_GOES_data_annotations
-Manages solar flare annotations:
-- Processes 7-day GOES flare data
-- Creates Grafana annotations for flare events
-- Marks start, peak, and end times
-- Tags events for filtering
+* to the topic gcn.notices.swxsoc.goes_xrs_{severity}flare_alert where {} severity is one of [X10, X1, M5, M1], send a message if flux exceeds that threshold and when the flux decreases below the threshold
+* to the topic gcn.notices.swxsoc.goes_xrs_flux_long send the latest goes xrs long flux value
+* to the topic gcn.notices.swxsoc.goes_xrs_flux_short send the latest goes xrs short flux value
 
-### Generate lines of code report and upload
-
-
-### import_UDL_REACH_to_timestream
-Likely a temporary addition. Gets REACH data from the UDL. Grabs data from 2 hours ago to 1 hour ago.
-
+GOES XRS data can be approximately 4 minutes behind real-time.
 
 ## Error Handling
 - HTTP 200: Successful execution
