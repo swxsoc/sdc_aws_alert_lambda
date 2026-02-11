@@ -134,7 +134,7 @@ class Executor:
                 "flux": latest_flux
             }
             data_json = json.dumps(data).encode()
-            producer.produce(f"gcn.notices.swxsoc.goes_xrs_flux{kind}", data_json)
+            producer.produce(f"gcn.notices.swxsoc.goes_xrs_flux_{kind}", data_json)
             producer.flush()
 
         SEVERITIES = {

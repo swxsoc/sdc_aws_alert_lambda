@@ -3,4 +3,3 @@ ruff
 swxsoc @ git+https://github.com/swxsoc/swxsoc.git
 gcn_kafka
 pandas
-lambda_function
