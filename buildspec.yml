@@ -20,6 +20,7 @@ phases:
   build:
     commands:
       - REGION=us-east-1
+      - ECR_REPO=351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_alert_lambda
       - echo Login to Private ECR $REGION
       - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin 351967858401.dkr.ecr.$REGION.amazonaws.com
       - echo ________________________________
@@ -29,18 +30,17 @@ phases:
       - echo ________________________________
 
       - echo Build Docker Image
-      - docker build -t 351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_executor_lambda:latest lambda_function/.
+      - docker build -t $ECR_REPO:latest lambda_function/.
       
       - echo Tagging Docker Image...
-      - docker tag 351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_executor_lambda:latest 351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_executor_lambda:$TAG
+      - docker tag $ECR_REPO:latest $ECR_REPO:$TAG
 
       - echo Pushing the Docker image with Tags...
-      - docker push 351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_executor_lambda:latest
-      - docker push 351967858401.dkr.ecr.$REGION.amazonaws.com/sdc_aws_executor_lambda:$TAG
+      - docker push $ECR_REPO:latest
+      - docker push $ECR_REPO:$TAG
       - echo ________________________________
       
-      - echo Updating Deployment
-      - aws codebuild start-build --project-name build_sdc_aws_pipeline_architecture --region us-east-2 --environment-variables-override name=LAMBDA_PIPELINE,value=executor,type=PLAINTEXT name=TAG,value=$TAG,type=PLAINTEXT
+      - echo Alert Lambda image published. Infrastructure deployment is managed separately.
       - echo ________________________________
 
   post_build:

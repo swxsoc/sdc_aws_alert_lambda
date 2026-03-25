@@ -2,18 +2,18 @@
 This Module contains the Exector class that determines
 which function to execute based on the event rule.
 """
-import os
 import json
+import os
 import re
-
 from typing import Any, Dict
-from swxsoc.logger import log
+from datetime import datetime, timedelta, timezone
 
-import pandas as pd
-import boto3
-from gcn_kafka import Producer
+try:
+    from swxsoc import log
+except ImportError:  # pragma: no cover - local fallback when SWxSOC is unavailable
+    import logging
 
-from datetime import datetime, timezone, timedelta
+    log = logging.getLogger(__name__)
 
 
 def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
@@ -74,22 +74,31 @@ class Executor:
         self.function_name = function_name
         self.function_mapping = {
             "get_GOESXRS_alert_stream": self.goes_xrs_alert_stream,
+            "get_goesxrs_alert_stream": self.goes_xrs_alert_stream,
         }
+        self._load_secrets()
+
+    @staticmethod
+    def _load_secrets() -> None:
+        """Load GCN credentials from Secrets Manager into the environment."""
         try:
-            # Initialize Grafana API Key
+            import boto3
+
             session = boto3.session.Session()
-            env_to_ids = {
-                "GCN_CLIEND_SECRET": "gcn_client_secret",
-                "GCN_CLIENT_ID": "gcn_client_id",
+            client = session.client(service_name="secretsmanager")
+            env_to_secret_keys = {
+                "GCN_CLIENT_ID_SECRET_ARN": "gcn_client_id",
+                "GCN_CLIENT_SECRET_SECRET_ARN": "gcn_client_secret",
             }
-            for key, value in env_to_ids.items():
-                secret_arn = os.getenv(key, None)
-                client = session.client(service_name="secretsmanager")
+            for env_var, secret_key in env_to_secret_keys.items():
+                secret_arn = os.getenv(env_var)
+                if not secret_arn:
+                    continue
                 response = client.get_secret_value(SecretId=secret_arn)
                 secret = json.loads(response["SecretString"])
-                os.environ[value.upper()] = secret[value]
-                log.info(f"{value} API Key loaded")
-        except Exception as e:
+                os.environ[secret_key.upper()] = secret[secret_key]
+                log.info("Loaded secret", extra={"secret_key": secret_key})
+        except Exception:
             log.error("Error reading secrets", exc_info=True)
 
     def execute(self) -> None:
@@ -106,11 +115,16 @@ class Executor:
         """
         Get latest GOES XRS data and generate kafka messages.
         """
-        DOMAIN = "test.gcn.nasa.gov"
-        CLIENT_ID = os.getenv("GCN_CLIENT_ID")
-        CLIEND_SECRET = os.getenv("GCN_CLIEND_SECRET")
+        import pandas as pd
+        from gcn_kafka import Producer
+
+        domain = os.getenv("GCN_DOMAIN", "test.gcn.nasa.gov")
+        client_id = os.getenv("GCN_CLIENT_ID")
+        client_secret = os.getenv("GCN_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise ValueError("GCN credentials are not loaded")
         producer = Producer(
-            client_id=CLIENT_ID, client_secret=CLIEND_SECRET, domain=DOMAIN
+            client_id=client_id, client_secret=client_secret, domain=domain
         )
 
         def produce_alert(
@@ -152,15 +166,20 @@ class Executor:
             five_minutes_ago = utc_now - timedelta(minutes=5)
             recent_data = goes_xrs_long[goes_xrs_long.index >= five_minutes_ago]
             old_data = goes_xrs_long[goes_xrs_long.index < five_minutes_ago]
+            if recent_data.empty:
+                raise ValueError("No recent GOES XRS data available")
+            if old_data.empty:
+                raise ValueError("No historical GOES XRS baseline available")
             average_new_flux = recent_data["flux"].mean()
-            latest_flux = recent_data["flux"].values[-1]
-            old_flux = old_data["flux"].values[-1]
+            latest_flux = float(recent_data["flux"].iloc[-1])
+            latest_time = recent_data.index[-1]
+            old_flux = float(old_data["flux"].iloc[-1])
 
             # send the latest flux value to kafka topic
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "alert_datetime": latest_flux.index.isoformat(),
-                "flux": latest_flux
+                "alert_datetime": latest_time.isoformat(),
+                "flux": latest_flux,
             }
             data_json = json.dumps(data).encode()
             producer.produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
