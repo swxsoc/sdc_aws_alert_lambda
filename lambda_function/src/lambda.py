@@ -1,10 +1,10 @@
 """
 This module contains the handler function and the main function
-which contains the logicthat initializes the Executor class
+which contains the logic that initializes the AlertDispatcher class
 in it's correct environment.
 """
 
-from executor import executor
+import alert_dispatcher
 
 
 def handler(event, context) -> dict:
@@ -20,4 +20,4 @@ def handler(event, context) -> dict:
     :rtype: dict
     """
 
-    return executor.handle_event(event, context)
+    return alert_dispatcher.handle_event(event, context)

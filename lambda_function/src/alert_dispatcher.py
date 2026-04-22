@@ -1,12 +1,11 @@
 """
-This Module contains the Exector class that determines
-which function to execute based on the event rule.
+This module dispatches alert functions based on the EventBridge rule name.
 """
 import json
 import os
 import re
-from typing import Any, Dict
 from datetime import datetime, timedelta, timezone
+from typing import Any, Dict
 
 try:
     from swxsoc import log
@@ -18,7 +17,7 @@ except ImportError:  # pragma: no cover - local fallback when SWxSOC is unavaila
 
 def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Handles the event passed to the Lambda function to initialize the FileProcessor.
+    Handle the Lambda event and dispatch the matching alert function.
 
     :param event: Event data passed from the Lambda trigger
     :type event: dict
@@ -46,8 +45,8 @@ def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
         log.info(f"Rule Name Extracted: {function_name}")
 
         # Execute the corresponding function
-        executor = Executor(function_name)
-        executor.execute()
+        dispatcher = AlertDispatcher(function_name)
+        dispatcher.execute()
 
         return {
             "statusCode": 200,
@@ -62,7 +61,7 @@ def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
         }
 
 
-class Executor:
+class AlertDispatcher:
     """
     Executes the appropriate function based on the event rule.
 
@@ -91,6 +90,8 @@ class Executor:
                 "GCN_CLIENT_SECRET_SECRET_ARN": "gcn_client_secret",
             }
             for env_var, secret_key in env_to_secret_keys.items():
+                if os.getenv(secret_key.upper()):
+                    continue
                 secret_arn = os.getenv(env_var)
                 if not secret_arn:
                     continue
@@ -128,17 +129,16 @@ class Executor:
         )
 
         def produce_alert(
-            topic, description: str, alert_type: str, alert_datetime: datetime
-        ):
+            topic: str, description: str, alert_type: str, alert_datetime: datetime
+        ) -> None:
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "title": "Alert",
                 "description": description,
                 "alert_datetime": alert_datetime.isoformat(),
-                "alert_tense": "curent",
+                "alert_tense": "current",
                 "alert_type": alert_type,
             }
-            # JSON data converted to byte string format
             data_json = json.dumps(data).encode()
             producer.produce(topic, data_json)
             producer.flush()
@@ -200,7 +200,9 @@ class Executor:
             if old_flux > average_new_flux:
                 for severity, threshold in SEVERITIES.items():
                     if old_flux >= threshold and average_new_flux < threshold:
-                        log.info(f"Flux has decreased below {severity} threshold, {severity}alert is over")
+                        log.info(
+                            f"Flux has decreased below {severity} threshold, {severity} alert is over"
+                        )
                         produce_alert(
                             f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
                             f"GOES XRS flux has decreased below {severity} threshold",
@@ -208,6 +210,6 @@ class Executor:
                             utc_now,
                         )
 
-        except Exception as e:
-            log.error("Error importing GOES data to Timestream", exc_info=True)
+        except Exception:
+            log.error("Error generating GOES XRS alerts", exc_info=True)
             raise

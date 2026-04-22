@@ -12,7 +12,7 @@ SRC_DIR = Path(__file__).resolve().parents[1] / "src"
 if str(SRC_DIR) not in sys.path:
     sys.path.insert(0, str(SRC_DIR))
 
-from executor.executor import Executor, handle_event  # noqa: E402
+from alert_dispatcher import AlertDispatcher, handle_event  # noqa: E402
 
 
 class FakeSecretsClient:
@@ -55,8 +55,8 @@ def clear_producer_instances():
 
 
 @pytest.fixture
-def executor_module(monkeypatch):
-    import executor.executor as executor_module
+def alert_dispatcher_module(monkeypatch):
+    import alert_dispatcher as alert_dispatcher_module
 
     fake_boto3 = types.ModuleType("boto3")
     fake_boto3.session = types.SimpleNamespace(Session=lambda: FakeSession())
@@ -69,7 +69,7 @@ def executor_module(monkeypatch):
     monkeypatch.setenv("GCN_CLIENT_SECRET_SECRET_ARN", "arn:client-secret")
     monkeypatch.delenv("GCN_CLIENT_ID", raising=False)
     monkeypatch.delenv("GCN_CLIENT_SECRET", raising=False)
-    return executor_module
+    return alert_dispatcher_module
 
 
 def test_handle_event_rejects_missing_resources():
@@ -78,13 +78,15 @@ def test_handle_event_rejects_missing_resources():
     assert "resources" in json.loads(response["body"])["error"]
 
 
-def test_executor_loads_secrets(monkeypatch, executor_module):
-    Executor("get_GOESXRS_alert_stream")
+def test_alert_dispatcher_loads_secrets(monkeypatch, alert_dispatcher_module):
+    AlertDispatcher("get_GOESXRS_alert_stream")
     assert os.environ["GCN_CLIENT_ID"] == "client-id-value"
     assert os.environ["GCN_CLIENT_SECRET"] == "client-secret-value"
 
 
-def test_goes_alert_stream_publishes_flux_and_threshold_alert(monkeypatch, executor_module):
+def test_goes_alert_stream_publishes_flux_and_threshold_alert(
+    monkeypatch, alert_dispatcher_module
+):
     now = pd.Timestamp("2026-03-25T12:00:00Z")
     frame = pd.DataFrame(
         [
@@ -100,27 +102,68 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(monkeypatch, execu
         def now(tz=None):
             return now.to_pydatetime()
 
-    fake_pandas = types.ModuleType("pandas")
-    fake_pandas.read_json = lambda url: frame.copy()
-    fake_pandas.to_datetime = pd.to_datetime
-    monkeypatch.setitem(sys.modules, "pandas", fake_pandas)
-    monkeypatch.setattr(executor_module, "datetime", FakeDateTime)
+    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
 
-    Executor("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+    AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
 
     producer = FakeProducer.instances[-1]
+    assert producer.client_id == "client-id-value"
+    assert producer.client_secret == "client-secret-value"
+    assert producer.domain == "test.gcn.nasa.gov"
+
     topics = [topic for topic, _ in producer.messages]
     assert "gcn.notices.swxsoc.goes_xrs_flux" in topics
     assert "gcn.notices.swxsoc.goes_xrs_c5flare_alert" in topics
 
+    alert_payload = next(
+        payload
+        for topic, payload in producer.messages
+        if topic == "gcn.notices.swxsoc.goes_xrs_c5flare_alert"
+    )
+    assert alert_payload["alert_tense"] == "current"
+    assert alert_payload["alert_type"] == "C5 Flare Alert"
 
-def test_handle_event_dispatches_matching_rule(monkeypatch, executor_module):
+
+def test_goes_alert_stream_publishes_threshold_end_alert(
+    monkeypatch, alert_dispatcher_module
+):
+    now = pd.Timestamp("2026-03-25T12:00:00Z")
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:54:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now.to_pydatetime()
+
+    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+
+    producer = FakeProducer.instances[-1]
+    end_payload = next(
+        payload
+        for topic, payload in producer.messages
+        if topic == "gcn.notices.swxsoc.goes_xrs_c5flare_alert"
+        and payload["alert_type"] == "C5 Flare Alert End"
+    )
+    assert end_payload["description"] == "GOES XRS flux has decreased below C5 threshold"
+
+
+def test_handle_event_dispatches_matching_rule(monkeypatch, alert_dispatcher_module):
     called = {"executed": False}
 
     def fake_execute(self):
         called["executed"] = True
 
-    monkeypatch.setattr(Executor, "execute", fake_execute)
+    monkeypatch.setattr(AlertDispatcher, "execute", fake_execute)
     event = {"resources": ["arn:aws:events:us-east-1:123456789012:rule/get_GOESXRS_alert_stream"]}
 
     response = handle_event(event, {})

@@ -13,7 +13,7 @@ This repository packages a focused alerting Lambda that:
 
 ## Runtime Inputs
 
-The Lambda expects EventBridge events with a rule name that maps to a function in the executor.
+The Lambda expects EventBridge events with a rule name that maps to a function in the alert dispatcher.
 
 Required environment variables:
 
@@ -37,4 +37,11 @@ pytest
 
 ## Deployment Notes
 
-This repository can build the Lambda container image, but the current local Terraform repo does not yet define deployment resources for this alert Lambda. A follow-on infrastructure change is still needed to wire the image into AWS.
+This repository builds the Lambda container image as a standalone ancillary asset.
+
+It does not need to be represented in the local Terraform repo.
+
+If you publish it through CodeBuild, the current buildspec pushes to:
+
+- production: `sdc_aws_alert_lambda`
+- development: `dev-sdc_aws_alert_lambda`
