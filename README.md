@@ -1,58 +1,47 @@
-# Executor Lambda Function
+# SWxSOC Alert Lambda
 
-Lambda function implementing an executor pattern to run scheduled tasks via CloudWatch Events/EventBridge rules. Each rule's name maps directly to its corresponding function, enabling independent scheduling.
+Lambda container for GOES XRS alert generation and GCN Kafka publication.
 
-## Architecture
+## Purpose
 
-- CloudWatch Events/EventBridge rules trigger the Lambda
-- Rule name pattern: `<function_name>`
-- Function mapping handled by Executor class
-- Modular design for easy addition of new functions
+This repository packages a focused alerting Lambda that:
 
-## Setup
+- runs from EventBridge / CloudWatch scheduled rules
+- fetches recent GOES XRS flux data from NOAA
+- publishes the latest flux stream to GCN Kafka
+- emits flare threshold crossing alerts when flux rises above or falls below configured severities
 
-### Requirements
-- AWS Lambda
-- CloudWatch Events/EventBridge
-- AWS Secrets Manager for credentials
-- Python 3.9+
+## Runtime Inputs
 
-### Environment Variables
-- `SECRET_ARN`: Secrets Manager ARN containing required credentials
+The Lambda expects EventBridge events with a rule name that maps to a function in the alert dispatcher.
 
-## Implementation
+Required environment variables:
 
-### Adding New Functions
-1. Add function to Executor class
-2. Map function in `function_mapping` dictionary
-3. Create corresponding CloudWatch rule which matches the function name and a schedule
-4. Add rule as trigger to executor lambda function
+- `GCN_CLIENT_ID_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_id`
+- `GCN_CLIENT_SECRET_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_secret`
+- `GCN_DOMAIN`: Optional Kafka domain override. Defaults to `test.gcn.nasa.gov`
 
-## Included Functions
+## Local Validation
 
-### import_GOES_data_to_timestream
-Processes GOES X-ray satellite data:
-- Fetches 3-day X-ray flux data from NOAA
-- Filters last 24 hours
-- Handles both wavelength channels (0.05-0.4nm, 0.1-0.8nm)
-- Stores in Amazon Timestream
+Install dependencies:
 
-### create_GOES_data_annotations
-Manages solar flare annotations:
-- Processes 7-day GOES flare data
-- Creates Grafana annotations for flare events
-- Marks start, peak, and end times
-- Tags events for filtering
+```bash
+pip install -r requirements.txt
+```
 
-### Generate lines of code report and upload
+Run tests:
 
+```bash
+pytest
+```
 
-### import_UDL_REACH_to_timestream
-Likely a temporary addition. Gets REACH data from the UDL. Grabs data from 2 hours ago to 1 hour ago.
+## Deployment Notes
 
+This repository builds the Lambda container image as a standalone ancillary asset.
 
-## Error Handling
-- HTTP 200: Successful execution
-- HTTP 500: Execution failure with error details
-- Comprehensive logging via swxsoc
+It does not need to be represented in the local Terraform repo.
 
+If you publish it through CodeBuild, the current buildspec pushes to:
+
+- production: `sdc_aws_alert_lambda`
+- development: `dev-sdc_aws_alert_lambda`

@@ -1,24 +1,23 @@
 """
-This Module contains the Exector class that determines
-which function to execute based on the event rule.
+This module dispatches alert functions based on the EventBridge rule name.
 """
-import os
 import json
+import os
 import re
-
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
-from swxsoc.logger import log
 
-import pandas as pd
-import boto3
-from gcn_kafka import Producer
+try:
+    from swxsoc import log
+except ImportError:  # pragma: no cover - local fallback when SWxSOC is unavailable
+    import logging
 
-from datetime import datetime, timezone, timedelta
+    log = logging.getLogger(__name__)
 
 
 def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Handles the event passed to the Lambda function to initialize the FileProcessor.
+    Handle the Lambda event and dispatch the matching alert function.
 
     :param event: Event data passed from the Lambda trigger
     :type event: dict
@@ -46,8 +45,8 @@ def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
         log.info(f"Rule Name Extracted: {function_name}")
 
         # Execute the corresponding function
-        executor = Executor(function_name)
-        executor.execute()
+        dispatcher = AlertDispatcher(function_name)
+        dispatcher.execute()
 
         return {
             "statusCode": 200,
@@ -62,7 +61,7 @@ def handle_event(event: Dict[str, Any], context: Dict[str, Any]) -> Dict[str, An
         }
 
 
-class Executor:
+class AlertDispatcher:
     """
     Executes the appropriate function based on the event rule.
 
@@ -74,22 +73,33 @@ class Executor:
         self.function_name = function_name
         self.function_mapping = {
             "get_GOESXRS_alert_stream": self.goes_xrs_alert_stream,
+            "get_goesxrs_alert_stream": self.goes_xrs_alert_stream,
         }
+        self._load_secrets()
+
+    @staticmethod
+    def _load_secrets() -> None:
+        """Load GCN credentials from Secrets Manager into the environment."""
         try:
-            # Initialize Grafana API Key
+            import boto3
+
             session = boto3.session.Session()
-            env_to_ids = {
-                "GCN_CLIEND_SECRET": "gcn_client_secret",
-                "GCN_CLIENT_ID": "gcn_client_id",
+            client = session.client(service_name="secretsmanager")
+            env_to_secret_keys = {
+                "GCN_CLIENT_ID_SECRET_ARN": "gcn_client_id",
+                "GCN_CLIENT_SECRET_SECRET_ARN": "gcn_client_secret",
             }
-            for key, value in env_to_ids.items():
-                secret_arn = os.getenv(key, None)
-                client = session.client(service_name="secretsmanager")
+            for env_var, secret_key in env_to_secret_keys.items():
+                if os.getenv(secret_key.upper()):
+                    continue
+                secret_arn = os.getenv(env_var)
+                if not secret_arn:
+                    continue
                 response = client.get_secret_value(SecretId=secret_arn)
                 secret = json.loads(response["SecretString"])
-                os.environ[value.upper()] = secret[value]
-                log.info(f"{value} API Key loaded")
-        except Exception as e:
+                os.environ[secret_key.upper()] = secret[secret_key]
+                log.info("Loaded secret", extra={"secret_key": secret_key})
+        except Exception:
             log.error("Error reading secrets", exc_info=True)
 
     def execute(self) -> None:
@@ -106,25 +116,29 @@ class Executor:
         """
         Get latest GOES XRS data and generate kafka messages.
         """
-        DOMAIN = "test.gcn.nasa.gov"
-        CLIENT_ID = os.getenv("GCN_CLIENT_ID")
-        CLIEND_SECRET = os.getenv("GCN_CLIEND_SECRET")
+        import pandas as pd
+        from gcn_kafka import Producer
+
+        domain = os.getenv("GCN_DOMAIN", "test.gcn.nasa.gov")
+        client_id = os.getenv("GCN_CLIENT_ID")
+        client_secret = os.getenv("GCN_CLIENT_SECRET")
+        if not client_id or not client_secret:
+            raise ValueError("GCN credentials are not loaded")
         producer = Producer(
-            client_id=CLIENT_ID, client_secret=CLIEND_SECRET, domain=DOMAIN
+            client_id=client_id, client_secret=client_secret, domain=domain
         )
 
         def produce_alert(
-            topic, description: str, alert_type: str, alert_datetime: datetime
-        ):
+            topic: str, description: str, alert_type: str, alert_datetime: datetime
+        ) -> None:
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "title": "Alert",
                 "description": description,
                 "alert_datetime": alert_datetime.isoformat(),
-                "alert_tense": "curent",
+                "alert_tense": "current",
                 "alert_type": alert_type,
             }
-            # JSON data converted to byte string format
             data_json = json.dumps(data).encode()
             producer.produce(topic, data_json)
             producer.flush()
@@ -152,15 +166,20 @@ class Executor:
             five_minutes_ago = utc_now - timedelta(minutes=5)
             recent_data = goes_xrs_long[goes_xrs_long.index >= five_minutes_ago]
             old_data = goes_xrs_long[goes_xrs_long.index < five_minutes_ago]
+            if recent_data.empty:
+                raise ValueError("No recent GOES XRS data available")
+            if old_data.empty:
+                raise ValueError("No historical GOES XRS baseline available")
             average_new_flux = recent_data["flux"].mean()
-            latest_flux = recent_data["flux"].values[-1]
-            old_flux = old_data["flux"].values[-1]
+            latest_flux = float(recent_data["flux"].iloc[-1])
+            latest_time = recent_data.index[-1]
+            old_flux = float(old_data["flux"].iloc[-1])
 
             # send the latest flux value to kafka topic
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
-                "alert_datetime": latest_flux.index.isoformat(),
-                "flux": latest_flux
+                "alert_datetime": latest_time.isoformat(),
+                "flux": latest_flux,
             }
             data_json = json.dumps(data).encode()
             producer.produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
@@ -181,7 +200,9 @@ class Executor:
             if old_flux > average_new_flux:
                 for severity, threshold in SEVERITIES.items():
                     if old_flux >= threshold and average_new_flux < threshold:
-                        log.info(f"Flux has decreased below {severity} threshold, {severity}alert is over")
+                        log.info(
+                            f"Flux has decreased below {severity} threshold, {severity} alert is over"
+                        )
                         produce_alert(
                             f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
                             f"GOES XRS flux has decreased below {severity} threshold",
@@ -189,6 +210,6 @@ class Executor:
                             utc_now,
                         )
 
-        except Exception as e:
-            log.error("Error importing GOES data to Timestream", exc_info=True)
+        except Exception:
+            log.error("Error generating GOES XRS alerts", exc_info=True)
             raise
