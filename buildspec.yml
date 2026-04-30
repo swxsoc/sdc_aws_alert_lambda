@@ -36,21 +36,25 @@ phases:
       - echo Resolve target image and base image
       - |
         BASE_IMAGE="public.ecr.aws/w5r9l1c8/swsoc-docker-lambda-base:latest"
-        ECR_REPO_NAME="sdc_aws_alert_lambda"
+        ECR_REPO_NAME="swxsoc_sdc_aws_alert_lambda"
+        ENVIRONMENT="${CDK_ENVIRONMENT:-PRODUCTION}"
         if git describe --tags --exact-match > /dev/null 2>&1; then
           echo "This is a tag push event"
           VERSION=$(git describe --tags --exact-match)
-        elif [ "${CDK_ENVIRONMENT:-}" = "PRODUCTION" ]; then
-          echo "This is a production environment"
-          VERSION=$(date -u +"%Y%m%d%H%M%S")
-        else
+        elif [ "$ENVIRONMENT" = "DEVELOPMENT" ] || [ "$ENVIRONMENT" = "DEV" ]; then
           echo "This is a development environment"
           BASE_IMAGE="public.ecr.aws/w5r9l1c8/dev-swsoc-docker-lambda-base:latest"
-          ECR_REPO_NAME="dev-sdc_aws_alert_lambda"
+          VERSION=$(date -u +"%Y%m%d%H%M%S")
+        else
+          echo "This is a production environment"
           VERSION=$(date -u +"%Y%m%d%H%M%S")
         fi
         ECR_REPO="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_REPO_NAME"
-        aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$REGION" > /dev/null
+        if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$REGION" > /dev/null; then
+          echo "ECR repository '$ECR_REPO_NAME' does not exist in account '$ACCOUNT_ID' region '$REGION'."
+          echo "Create that repository before rerunning this build."
+          exit 1
+        fi
       - echo ________________________________
 
       - echo Build Docker Image
@@ -75,5 +79,4 @@ phases:
           echo Build Successful - Lambda Successfully Built and Pushed to ECR
         else
           echo Build Failed - Lambda image was not built or pushed to ECR
-          exit 1
         fi

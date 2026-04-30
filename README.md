@@ -43,8 +43,7 @@ It does not need to be represented in the local Terraform repo.
 
 If you publish it through CodeBuild, the current buildspec pushes to:
 
-- production: `sdc_aws_alert_lambda`
-- development: `dev-sdc_aws_alert_lambda`
+- `swxsoc_sdc_aws_alert_lambda`
 
 The CodeBuild service role must allow ECR authentication and image push
 operations for those repositories. Attach a policy like this to the build role:
@@ -71,8 +70,7 @@ operations for those repositories. Attach a policy like this to the build role:
         "ecr:UploadLayerPart"
       ],
       "Resource": [
-        "arn:aws:ecr:us-east-1:351967858401:repository/sdc_aws_alert_lambda",
-        "arn:aws:ecr:us-east-1:351967858401:repository/dev-sdc_aws_alert_lambda"
+        "arn:aws:ecr:us-east-1:351967858401:repository/swxsoc_sdc_aws_alert_lambda"
       ]
     }
   ]
