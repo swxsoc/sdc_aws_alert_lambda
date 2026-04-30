@@ -50,11 +50,7 @@ phases:
           VERSION=$(date -u +"%Y%m%d%H%M%S")
         fi
         ECR_REPO="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_REPO_NAME"
-        if ! aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$REGION" > /dev/null; then
-          echo "ECR repository '$ECR_REPO_NAME' does not exist in account '$ACCOUNT_ID' region '$REGION'."
-          echo "Create that repository before rerunning this build."
-          exit 1
-        fi
+        echo "Publishing image to $ECR_REPO with tag $VERSION"
       - echo ________________________________
 
       - echo Build Docker Image
