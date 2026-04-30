@@ -1,8 +1,13 @@
 version: 0.2
 
+env:
+  variables:
+    ECR_REGION: us-east-1
+
 phases:
   pre_build:
     commands:
+      - set -euo pipefail
       - echo Installing CI/CD Dependencies...
       - python -m pip install --upgrade pip
       - pip3 install flake8 black pytest pytest-astropy pytest-cov
@@ -19,7 +24,8 @@ phases:
     
   build:
     commands:
-      - REGION=us-east-1
+      - set -euo pipefail
+      - REGION=$ECR_REGION
       - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
       - echo Login to Private ECR $REGION
       - aws ecr get-login-password --region $REGION | docker login --username AWS --password-stdin $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
@@ -32,7 +38,7 @@ phases:
         if git describe --tags --exact-match > /dev/null 2>&1; then
           echo "This is a tag push event"
           VERSION=$(git describe --tags --exact-match)
-        elif [ "${CDK_ENVIRONMENT}" = "PRODUCTION" ]; then
+        elif [ "${CDK_ENVIRONMENT:-}" = "PRODUCTION" ]; then
           echo "This is a production environment"
           VERSION=$(date -u +"%Y%m%d%H%M%S")
         else
@@ -42,6 +48,7 @@ phases:
           VERSION=$(date -u +"%Y%m%d%H%M%S")
         fi
         ECR_REPO="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/$ECR_REPO_NAME"
+        aws ecr describe-repositories --repository-names "$ECR_REPO_NAME" --region "$REGION" > /dev/null
       - echo ________________________________
 
       - echo Build Docker Image
@@ -60,4 +67,5 @@ phases:
 
   post_build:
     commands:
+      - set -euo pipefail
       - echo Build Successful - Lambda Successfully Built and Pushed to ECR

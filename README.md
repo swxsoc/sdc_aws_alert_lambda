@@ -45,3 +45,36 @@ If you publish it through CodeBuild, the current buildspec pushes to:
 
 - production: `sdc_aws_alert_lambda`
 - development: `dev-sdc_aws_alert_lambda`
+
+The CodeBuild service role must allow ECR authentication and image push
+operations for those repositories. Attach a policy like this to the build role:
+
+```json
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "EcrLogin",
+      "Effect": "Allow",
+      "Action": "ecr:GetAuthorizationToken",
+      "Resource": "*"
+    },
+    {
+      "Sid": "PushAlertLambdaImages",
+      "Effect": "Allow",
+      "Action": [
+        "ecr:BatchCheckLayerAvailability",
+        "ecr:CompleteLayerUpload",
+        "ecr:DescribeRepositories",
+        "ecr:InitiateLayerUpload",
+        "ecr:PutImage",
+        "ecr:UploadLayerPart"
+      ],
+      "Resource": [
+        "arn:aws:ecr:us-east-1:351967858401:repository/sdc_aws_alert_lambda",
+        "arn:aws:ecr:us-east-1:351967858401:repository/dev-sdc_aws_alert_lambda"
+      ]
+    }
+  ]
+}
+```
