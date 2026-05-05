@@ -34,10 +34,11 @@ class FakeProducer:
     instances = []
     flush_result = 0
 
-    def __init__(self, client_id, client_secret, domain):
+    def __init__(self, client_id, client_secret, domain, **kwargs):
         self.client_id = client_id
         self.client_secret = client_secret
         self.domain = domain
+        self.kwargs = kwargs
         self.messages = []
         FakeProducer.instances.append(self)
 
@@ -151,7 +152,9 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(
         def now(tz=None):
             return now.to_pydatetime()
 
-    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
     monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
 
     AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
@@ -192,7 +195,9 @@ def test_goes_alert_stream_limits_kafka_flush_time(
             return now.to_pydatetime()
 
     monkeypatch.setenv("GCN_PRODUCER_FLUSH_TIMEOUT_SECONDS", "2")
-    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
     monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
     FakeProducer.flush_result = 1
 
@@ -217,7 +222,9 @@ def test_goes_alert_stream_allows_noaa_feed_lag(monkeypatch, alert_dispatcher_mo
         def now(tz=None):
             return now.to_pydatetime()
 
-    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
     monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
 
     AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
@@ -242,12 +249,14 @@ def test_goes_alert_stream_skips_stale_noaa_feed(monkeypatch, alert_dispatcher_m
         def now(tz=None):
             return now.to_pydatetime()
 
-    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
     monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
 
     AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
 
-    assert FakeProducer.instances[-1].messages == []
+    assert FakeProducer.instances == []
 
 
 def test_goes_alert_stream_publishes_threshold_end_alert(
@@ -267,7 +276,9 @@ def test_goes_alert_stream_publishes_threshold_end_alert(
         def now(tz=None):
             return now.to_pydatetime()
 
-    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
     monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
 
     AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()

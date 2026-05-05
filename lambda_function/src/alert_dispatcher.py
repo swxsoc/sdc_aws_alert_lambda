@@ -1,9 +1,12 @@
 """
 This module dispatches alert functions based on the EventBridge rule name.
 """
+import io
 import json
 import os
 import re
+import time
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
@@ -182,12 +185,34 @@ class AlertDispatcher:
         self.function_mapping[self.function_name]()
 
     @staticmethod
+    def _read_goes_xrs_data():
+        """Read GOES XRS JSON data with a bounded HTTP timeout."""
+        import pandas as pd
+
+        noaa_url = os.getenv(
+            "GOES_XRS_URL",
+            "https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json",
+        )
+        timeout_seconds = float(os.getenv("GOES_XRS_HTTP_TIMEOUT_SECONDS", "10"))
+        start_time = time.monotonic()
+        log.info(
+            "Fetching GOES XRS data from NOAA",
+            extra={"url": noaa_url, "timeout_seconds": timeout_seconds},
+        )
+        with urllib.request.urlopen(noaa_url, timeout=timeout_seconds) as response:
+            payload = response.read()
+        log.info(
+            "Fetched GOES XRS data from NOAA",
+            extra={"elapsed_seconds": time.monotonic() - start_time},
+        )
+        return pd.read_json(io.BytesIO(payload))
+
+    @staticmethod
     def goes_xrs_alert_stream():
         """
         Get latest GOES XRS data and generate kafka messages.
         """
         import pandas as pd
-        from gcn_kafka import Producer
 
         domain = os.getenv("GCN_DOMAIN", "test.gcn.nasa.gov")
         client_id = os.getenv("GCN_CLIENT_ID")
@@ -200,15 +225,49 @@ class AlertDispatcher:
         )
         if not client_id or not client_secret:
             raise ValueError("GCN credentials are not loaded")
-        producer = Producer(
-            client_id=client_id,
-            client_secret=client_secret,
-            domain=domain,
-            **{"delivery.timeout.ms": producer_delivery_timeout_seconds * 1000},
-        )
+        producer = None
+
+        def get_producer():
+            nonlocal producer
+            if producer is not None:
+                return producer
+            log.info(
+                "Creating GCN Kafka producer",
+                extra={
+                    "domain": domain,
+                    "delivery_timeout_seconds": producer_delivery_timeout_seconds,
+                },
+            )
+            start_time = time.monotonic()
+            from gcn_kafka import Producer
+
+            producer = Producer(
+                client_id=client_id,
+                client_secret=client_secret,
+                domain=domain,
+                **{"delivery.timeout.ms": producer_delivery_timeout_seconds * 1000},
+            )
+            log.info(
+                "Created GCN Kafka producer",
+                extra={"elapsed_seconds": time.monotonic() - start_time},
+            )
+            return producer
 
         def flush_producer() -> None:
-            remaining_messages = producer.flush(producer_flush_timeout_seconds)
+            active_producer = get_producer()
+            log.info(
+                "Flushing GCN Kafka producer",
+                extra={"timeout_seconds": producer_flush_timeout_seconds},
+            )
+            start_time = time.monotonic()
+            remaining_messages = active_producer.flush(producer_flush_timeout_seconds)
+            log.info(
+                "Finished flushing GCN Kafka producer",
+                extra={
+                    "elapsed_seconds": time.monotonic() - start_time,
+                    "remaining_messages": remaining_messages,
+                },
+            )
             if remaining_messages:
                 raise TimeoutError(
                     "Timed out delivering messages to GCN Kafka. "
@@ -228,7 +287,7 @@ class AlertDispatcher:
                 "alert_type": alert_type,
             }
             data_json = json.dumps(data).encode()
-            producer.produce(topic, data_json)
+            get_producer().produce(topic, data_json)
             flush_producer()
 
         SEVERITIES = {
@@ -244,9 +303,7 @@ class AlertDispatcher:
 
         log.info("Getting GOES XRS data from NOAA")
         try:
-            goes_json_data = pd.read_json(
-                "https://services.swpc.noaa.gov/json/goes/primary/xrays-6-hour.json"
-            )
+            goes_json_data = AlertDispatcher._read_goes_xrs_data()
             # Convert the 'time_tag' column to datetime and set it as the index
             goes_json_data["time_tag"] = pd.to_datetime(goes_json_data["time_tag"])
             goes_json_data.set_index("time_tag", inplace=True)
@@ -287,7 +344,7 @@ class AlertDispatcher:
                 "flux": latest_flux,
             }
             data_json = json.dumps(data).encode()
-            producer.produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
+            get_producer().produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
             flush_producer()
 
             # check if the flux exceeded any severity threshold
