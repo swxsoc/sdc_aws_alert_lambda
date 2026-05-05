@@ -78,29 +78,99 @@ class AlertDispatcher:
         self._load_secrets()
 
     @staticmethod
+    def _secret_mapping() -> Dict[str, str]:
+        return {
+            "GCN_CLIENT_ID_SECRET_ARN": "GCN_CLIENT_ID",
+            "GCN_CLIENT_SECRET_SECRET_ARN": "GCN_CLIENT_SECRET",
+        }
+
+    @staticmethod
+    def _parse_secret_string(secret_string: str) -> Dict[str, str]:
+        """Parse a Secrets Manager string as JSON first, then dotenv-style text."""
+        try:
+            secret = json.loads(secret_string)
+        except json.JSONDecodeError:
+            secret = {}
+            for line in secret_string.splitlines():
+                stripped = line.strip()
+                if not stripped or stripped.startswith("#") or "=" not in stripped:
+                    continue
+                key, value = stripped.split("=", 1)
+                secret[key.strip()] = value.strip().strip("\"'")
+
+        if not isinstance(secret, dict):
+            raise ValueError("SecretString must be a JSON object or dotenv-style text")
+
+        return {
+            str(key): str(value)
+            for key, value in secret.items()
+            if value is not None
+        }
+
+    @staticmethod
+    def _get_secret_value(secret: Dict[str, str], env_name: str) -> str:
+        key_options = (
+            env_name,
+            env_name.lower(),
+            env_name.removeprefix("GCN_").lower(),
+        )
+        for key in key_options:
+            value = secret.get(key)
+            if value:
+                return value
+        raise KeyError(
+            f"Secret is missing one of the expected keys: {', '.join(key_options)}"
+        )
+
+    @staticmethod
     def _load_secrets() -> None:
         """Load GCN credentials from Secrets Manager into the environment."""
+        secret_mapping = AlertDispatcher._secret_mapping()
+        secrets_to_load = {
+            secret_arn_env: credential_env
+            for secret_arn_env, credential_env in secret_mapping.items()
+            if not os.getenv(credential_env)
+        }
+        if not secrets_to_load:
+            return
+
+        missing_secret_env_vars = [
+            env_var for env_var in secrets_to_load if not os.getenv(env_var)
+        ]
+        if missing_secret_env_vars:
+            raise RuntimeError(
+                "Missing GCN credentials. Set GCN_CLIENT_ID and GCN_CLIENT_SECRET "
+                "directly, or configure Secrets Manager ARNs in: "
+                f"{', '.join(missing_secret_env_vars)}"
+            )
+
         try:
             import boto3
 
             session = boto3.session.Session()
             client = session.client(service_name="secretsmanager")
-            env_to_secret_keys = {
-                "GCN_CLIENT_ID_SECRET_ARN": "gcn_client_id",
-                "GCN_CLIENT_SECRET_SECRET_ARN": "gcn_client_secret",
-            }
-            for env_var, secret_key in env_to_secret_keys.items():
-                if os.getenv(secret_key.upper()):
-                    continue
+            for env_var, credential_env in secrets_to_load.items():
                 secret_arn = os.getenv(env_var)
                 if not secret_arn:
                     continue
                 response = client.get_secret_value(SecretId=secret_arn)
-                secret = json.loads(response["SecretString"])
-                os.environ[secret_key.upper()] = secret[secret_key]
-                log.info("Loaded secret", extra={"secret_key": secret_key})
-        except Exception:
-            log.error("Error reading secrets", exc_info=True)
+                secret_string = response.get("SecretString")
+                if not secret_string:
+                    raise ValueError("Secret must contain SecretString")
+                secret = AlertDispatcher._parse_secret_string(secret_string)
+                os.environ[credential_env] = AlertDispatcher._get_secret_value(
+                    secret, credential_env
+                )
+                log.info("Loaded secret", extra={"credential_env": credential_env})
+        except Exception as exc:
+            log.error(
+                "Error reading secrets",
+                exc_info=True,
+                extra={"required_env": sorted(secrets_to_load.values())},
+            )
+            raise RuntimeError(
+                f"Error reading GCN credentials from Secrets Manager: {exc}"
+            ) from exc
 
     def execute(self) -> None:
         """
@@ -151,6 +221,8 @@ class AlertDispatcher:
             "M1": 1e-5,
             "C5": 5e-6,
         }
+        recent_window_minutes = int(os.getenv("GOES_XRS_RECENT_WINDOW_MINUTES", "5"))
+        feed_stale_minutes = int(os.getenv("GOES_XRS_FEED_STALE_MINUTES", "15"))
 
         log.info("Getting GOES XRS data from NOAA")
         try:
@@ -160,19 +232,34 @@ class AlertDispatcher:
             # Convert the 'time_tag' column to datetime and set it as the index
             goes_json_data["time_tag"] = pd.to_datetime(goes_json_data["time_tag"])
             goes_json_data.set_index("time_tag", inplace=True)
-            goes_xrs_long = goes_json_data[goes_json_data["energy"] == "0.1-0.8nm"]
-            # Filter the data to include only rows where the time_tag is within the last 5 minutes
+            goes_xrs_long = goes_json_data[
+                goes_json_data["energy"] == "0.1-0.8nm"
+            ].sort_index()
+            if goes_xrs_long.empty:
+                raise ValueError("No GOES XRS long-channel data available")
+
             utc_now = datetime.now(timezone.utc)
-            five_minutes_ago = utc_now - timedelta(minutes=5)
-            recent_data = goes_xrs_long[goes_xrs_long.index >= five_minutes_ago]
-            old_data = goes_xrs_long[goes_xrs_long.index < five_minutes_ago]
+            latest_time = goes_xrs_long.index[-1]
+            feed_age = utc_now - latest_time.to_pydatetime()
+            if feed_age > timedelta(minutes=feed_stale_minutes):
+                log.warning(
+                    "GOES XRS feed is stale",
+                    extra={
+                        "latest_time": latest_time.isoformat(),
+                        "feed_age_seconds": feed_age.total_seconds(),
+                    },
+                )
+                return
+
+            recent_window_start = latest_time - timedelta(minutes=recent_window_minutes)
+            recent_data = goes_xrs_long[goes_xrs_long.index >= recent_window_start]
+            old_data = goes_xrs_long[goes_xrs_long.index < recent_window_start]
             if recent_data.empty:
                 raise ValueError("No recent GOES XRS data available")
             if old_data.empty:
                 raise ValueError("No historical GOES XRS baseline available")
             average_new_flux = recent_data["flux"].mean()
             latest_flux = float(recent_data["flux"].iloc[-1])
-            latest_time = recent_data.index[-1]
             old_flux = float(old_data["flux"].iloc[-1])
 
             # send the latest flux value to kafka topic

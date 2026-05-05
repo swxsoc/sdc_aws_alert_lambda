@@ -20,6 +20,35 @@ Required environment variables:
 - `GCN_CLIENT_ID_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_id`
 - `GCN_CLIENT_SECRET_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_secret`
 - `GCN_DOMAIN`: Optional Kafka domain override. Defaults to `test.gcn.nasa.gov`
+- `GOES_XRS_RECENT_WINDOW_MINUTES`: Optional NOAA sample window. Defaults to `5`
+- `GOES_XRS_FEED_STALE_MINUTES`: Optional NOAA feed staleness limit. Defaults to `15`
+
+Secrets can be stored as JSON using either lowercase or environment-style keys:
+
+```json
+{"GCN_CLIENT_ID": "client-id-value"}
+```
+
+or:
+
+```json
+{"gcn_client_id": "client-id-value"}
+```
+
+They can also be stored as dotenv-style text, which is useful when importing a
+`.env` file into Secrets Manager:
+
+```text
+GCN_CLIENT_ID=client-id-value
+GCN_CLIENT_SECRET=client-secret-value
+```
+
+When using one bundled secret that contains both values, set both
+`GCN_CLIENT_ID_SECRET_ARN` and `GCN_CLIENT_SECRET_SECRET_ARN` to that same secret
+ARN.
+
+If you provide `GCN_CLIENT_ID` and `GCN_CLIENT_SECRET` directly as Lambda
+environment variables, the Lambda skips Secrets Manager.
 
 ## Local Validation
 

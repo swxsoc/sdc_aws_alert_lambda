@@ -84,6 +84,51 @@ def test_alert_dispatcher_loads_secrets(monkeypatch, alert_dispatcher_module):
     assert os.environ["GCN_CLIENT_SECRET"] == "client-secret-value"
 
 
+def test_secret_parser_accepts_uppercase_json_keys():
+    secret = AlertDispatcher._parse_secret_string(
+        json.dumps(
+            {
+                "GCN_CLIENT_ID": "client-id-value",
+                "GCN_CLIENT_SECRET": "client-secret-value",
+            }
+        )
+    )
+
+    assert AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    assert (
+        AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_SECRET")
+        == "client-secret-value"
+    )
+
+
+def test_secret_parser_accepts_dotenv_text():
+    secret = AlertDispatcher._parse_secret_string(
+        """
+        GCN_CLIENT_ID=client-id-value
+        GCN_CLIENT_SECRET="client-secret-value"
+        """
+    )
+
+    assert AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    assert (
+        AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_SECRET")
+        == "client-secret-value"
+    )
+
+
+def test_load_secrets_skips_boto3_when_credentials_are_already_set(monkeypatch):
+    monkeypatch.setenv("GCN_CLIENT_ID", "client-id-value")
+    monkeypatch.setenv("GCN_CLIENT_SECRET", "client-secret-value")
+    monkeypatch.setenv("GCN_CLIENT_ID_SECRET_ARN", "arn:client-id")
+    monkeypatch.setenv("GCN_CLIENT_SECRET_SECRET_ARN", "arn:client-secret")
+    monkeypatch.delitem(sys.modules, "boto3", raising=False)
+
+    AlertDispatcher("get_GOESXRS_alert_stream")
+
+    assert os.environ["GCN_CLIENT_ID"] == "client-id-value"
+    assert os.environ["GCN_CLIENT_SECRET"] == "client-secret-value"
+
+
 def test_goes_alert_stream_publishes_flux_and_threshold_alert(
     monkeypatch, alert_dispatcher_module
 ):
@@ -123,6 +168,54 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(
     )
     assert alert_payload["alert_tense"] == "current"
     assert alert_payload["alert_type"] == "C5 Flare Alert"
+
+
+def test_goes_alert_stream_allows_noaa_feed_lag(monkeypatch, alert_dispatcher_module):
+    now = pd.Timestamp("2026-03-25T12:00:00Z")
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:45:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:49:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:53:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now.to_pydatetime()
+
+    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+
+    producer = FakeProducer.instances[-1]
+    topics = [topic for topic, _ in producer.messages]
+    assert "gcn.notices.swxsoc.goes_xrs_flux" in topics
+    assert "gcn.notices.swxsoc.goes_xrs_c5flare_alert" in topics
+
+
+def test_goes_alert_stream_skips_stale_noaa_feed(monkeypatch, alert_dispatcher_module):
+    now = pd.Timestamp("2026-03-25T12:00:00Z")
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:35:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:40:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now.to_pydatetime()
+
+    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+
+    assert FakeProducer.instances[-1].messages == []
 
 
 def test_goes_alert_stream_publishes_threshold_end_alert(
