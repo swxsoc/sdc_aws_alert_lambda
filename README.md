@@ -20,6 +20,8 @@ Required environment variables:
 - `GCN_CLIENT_ID_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_id`
 - `GCN_CLIENT_SECRET_SECRET_ARN`: Secrets Manager ARN containing `gcn_client_secret`
 - `GCN_DOMAIN`: Optional Kafka domain override. Defaults to `test.gcn.nasa.gov`
+- `GCN_PRODUCER_FLUSH_TIMEOUT_SECONDS`: Optional Kafka flush timeout. Defaults to `10`
+- `GCN_PRODUCER_DELIVERY_TIMEOUT_SECONDS`: Optional Kafka delivery timeout. Defaults to `30`
 - `GOES_XRS_RECENT_WINDOW_MINUTES`: Optional NOAA sample window. Defaults to `5`
 - `GOES_XRS_FEED_STALE_MINUTES`: Optional NOAA feed staleness limit. Defaults to `15`
 

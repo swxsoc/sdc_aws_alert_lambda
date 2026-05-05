@@ -192,11 +192,29 @@ class AlertDispatcher:
         domain = os.getenv("GCN_DOMAIN", "test.gcn.nasa.gov")
         client_id = os.getenv("GCN_CLIENT_ID")
         client_secret = os.getenv("GCN_CLIENT_SECRET")
+        producer_flush_timeout_seconds = float(
+            os.getenv("GCN_PRODUCER_FLUSH_TIMEOUT_SECONDS", "10")
+        )
+        producer_delivery_timeout_seconds = int(
+            os.getenv("GCN_PRODUCER_DELIVERY_TIMEOUT_SECONDS", "30")
+        )
         if not client_id or not client_secret:
             raise ValueError("GCN credentials are not loaded")
         producer = Producer(
-            client_id=client_id, client_secret=client_secret, domain=domain
+            client_id=client_id,
+            client_secret=client_secret,
+            domain=domain,
+            **{"delivery.timeout.ms": producer_delivery_timeout_seconds * 1000},
         )
+
+        def flush_producer() -> None:
+            remaining_messages = producer.flush(producer_flush_timeout_seconds)
+            if remaining_messages:
+                raise TimeoutError(
+                    "Timed out delivering messages to GCN Kafka. "
+                    f"{remaining_messages} message(s) remained queued after "
+                    f"{producer_flush_timeout_seconds} seconds."
+                )
 
         def produce_alert(
             topic: str, description: str, alert_type: str, alert_datetime: datetime
@@ -211,7 +229,7 @@ class AlertDispatcher:
             }
             data_json = json.dumps(data).encode()
             producer.produce(topic, data_json)
-            producer.flush()
+            flush_producer()
 
         SEVERITIES = {
             "X10": 1e-3,
@@ -270,7 +288,7 @@ class AlertDispatcher:
             }
             data_json = json.dumps(data).encode()
             producer.produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
-            producer.flush()
+            flush_producer()
 
             # check if the flux exceeded any severity threshold
             if any(average_new_flux >= value for value in SEVERITIES.values()) and average_new_flux > old_flux:

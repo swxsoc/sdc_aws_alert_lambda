@@ -32,6 +32,7 @@ class FakeSession:
 
 class FakeProducer:
     instances = []
+    flush_result = 0
 
     def __init__(self, client_id, client_secret, domain):
         self.client_id = client_id
@@ -43,15 +44,18 @@ class FakeProducer:
     def produce(self, topic, data):
         self.messages.append((topic, json.loads(data.decode())))
 
-    def flush(self):
-        return None
+    def flush(self, timeout=None):
+        self.flush_timeout = timeout
+        return self.flush_result
 
 
 @pytest.fixture(autouse=True)
 def clear_producer_instances():
     FakeProducer.instances.clear()
+    FakeProducer.flush_result = 0
     yield
     FakeProducer.instances.clear()
+    FakeProducer.flush_result = 0
 
 
 @pytest.fixture
@@ -168,6 +172,34 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(
     )
     assert alert_payload["alert_tense"] == "current"
     assert alert_payload["alert_type"] == "C5 Flare Alert"
+
+
+def test_goes_alert_stream_limits_kafka_flush_time(
+    monkeypatch, alert_dispatcher_module
+):
+    now = pd.Timestamp("2026-03-25T12:00:00Z")
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:50:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now.to_pydatetime()
+
+    monkeypatch.setenv("GCN_PRODUCER_FLUSH_TIMEOUT_SECONDS", "2")
+    monkeypatch.setattr(pd, "read_json", lambda url: frame.copy())
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+    FakeProducer.flush_result = 1
+
+    with pytest.raises(TimeoutError, match="Timed out delivering messages"):
+        AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+
+    assert FakeProducer.instances[-1].flush_timeout == 2
 
 
 def test_goes_alert_stream_allows_noaa_feed_lag(monkeypatch, alert_dispatcher_module):
