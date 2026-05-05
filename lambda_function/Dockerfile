@@ -10,8 +10,11 @@ ARG FUNCTION_DIR="/lambda_function/"
 COPY requirements.txt ${ROOT}
 
 
-# Install cloc for code analysis
-RUN apt-get update -y && apt-get install -y cloc
+# Install OS dependencies
+RUN apt-get update -y && apt-get install -y --no-install-recommends \
+    cloc \
+    curl \
+    && rm -rf /var/lib/apt/lists/*
 
 # Update pip and install setuptools
 RUN pip install --upgrade pip setuptools
@@ -23,7 +26,7 @@ RUN pip install -r requirements.txt
 WORKDIR ${FUNCTION_DIR}
 
 # Set Up Lambda Runtime Environment
-RUN apt-get update -y && apt-get install -y curl && curl -Lo /usr/local/bin/aws-lambda-rie \
+RUN curl -Lo /usr/local/bin/aws-lambda-rie \
     https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/latest/download/aws-lambda-rie && \
     chmod +x /usr/local/bin/aws-lambda-rie
 
