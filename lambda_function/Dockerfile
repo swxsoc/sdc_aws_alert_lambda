@@ -10,12 +10,6 @@ ARG FUNCTION_DIR="/lambda_function/"
 COPY requirements.txt ${ROOT}
 
 
-# Install OS dependencies
-RUN apt-get update -y && apt-get install -y --no-install-recommends \
-    cloc \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
-
 # Update pip and install setuptools
 RUN pip install --upgrade pip setuptools
 
@@ -26,9 +20,8 @@ RUN pip install -r requirements.txt
 WORKDIR ${FUNCTION_DIR}
 
 # Set Up Lambda Runtime Environment
-RUN curl -Lo /usr/local/bin/aws-lambda-rie \
-    https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/latest/download/aws-lambda-rie && \
-    chmod +x /usr/local/bin/aws-lambda-rie
+RUN python3 -c "import urllib.request; urllib.request.urlretrieve('https://github.com/aws/aws-lambda-runtime-interface-emulator/releases/latest/download/aws-lambda-rie', '/usr/local/bin/aws-lambda-rie')" \
+    && chmod +x /usr/local/bin/aws-lambda-rie
 
 # Copy files from the source folder
 COPY src/. ${FUNCTION_DIR}
