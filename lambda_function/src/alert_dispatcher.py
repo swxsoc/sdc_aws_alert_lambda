@@ -290,7 +290,9 @@ class AlertDispatcher:
             get_producer().produce(topic, data_json)
             flush_producer()
 
-        def produce_heartbeat(topic: str, severity: str, heartbeat_datetime: datetime) -> None:
+        def _produce_heartbeat_message(
+            topic: str, severity: str, heartbeat_datetime: datetime
+        ) -> None:
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "title": "Alert",
@@ -318,7 +320,7 @@ class AlertDispatcher:
 
         heartbeat_datetime = datetime.now(timezone.utc)
         for severity in SEVERITIES:
-            produce_heartbeat(
+            _produce_heartbeat_message(
                 f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
                 severity,
                 heartbeat_datetime,
