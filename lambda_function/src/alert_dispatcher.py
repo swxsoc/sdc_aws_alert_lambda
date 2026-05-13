@@ -290,6 +290,23 @@ class AlertDispatcher:
             get_producer().produce(topic, data_json)
             flush_producer()
 
+        def _produce_heartbeat_message(
+            topic: str, severity: str, heartbeat_datetime: datetime
+        ) -> None:
+            data = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Alert",
+                "description": (
+                    f"Heartbeat message to keep GOES XRS {severity} flare alert topic active"
+                ),
+                "alert_datetime": heartbeat_datetime.isoformat(),
+                "alert_tense": "current",
+                "alert_type": f"{severity} Flare Alert Heartbeat",
+            }
+            data_json = json.dumps(data).encode()
+            get_producer().produce(topic, data_json)
+            flush_producer()
+
         SEVERITIES = {
             "X10": 1e-3,
             "X5": 5e-4,
@@ -300,6 +317,14 @@ class AlertDispatcher:
         }
         recent_window_minutes = int(os.getenv("GOES_XRS_RECENT_WINDOW_MINUTES", "5"))
         feed_stale_minutes = int(os.getenv("GOES_XRS_FEED_STALE_MINUTES", "15"))
+
+        heartbeat_datetime = datetime.now(timezone.utc)
+        for severity in SEVERITIES:
+            _produce_heartbeat_message(
+                f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
+                severity,
+                heartbeat_datetime,
+            )
 
         log.info("Getting GOES XRS data from NOAA")
         try:
