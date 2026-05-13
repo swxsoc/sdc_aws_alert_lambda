@@ -10,6 +10,7 @@ This repository packages a focused alerting Lambda that:
 - fetches recent GOES XRS flux data from NOAA
 - publishes the latest flux stream to GCN Kafka
 - emits flare threshold crossing alerts when flux rises above or falls below configured severities
+- sends heartbeat messages for GOES XRS flare threshold topics to keep cached GCN topics active
 
 ## Runtime Inputs
 
