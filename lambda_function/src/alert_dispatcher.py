@@ -218,29 +218,27 @@ class AlertDispatcher:
 
         heartbeat_date = heartbeat_datetime.date().isoformat()
 
+        import boto3
+        from botocore.exceptions import ClientError
+
+        session = boto3.session.Session()
+        client = session.client(service_name="ssm")
         try:
-            import boto3
+            response = client.get_parameter(Name=heartbeat_parameter_name)
+            if response["Parameter"]["Value"] == heartbeat_date:
+                return False
+        except ClientError as exc:
+            error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            if error_code != "ParameterNotFound":
+                raise
 
-            session = boto3.session.Session()
-            client = session.client(service_name="ssm")
-            try:
-                response = client.get_parameter(Name=heartbeat_parameter_name)
-                if response["Parameter"]["Value"] == heartbeat_date:
-                    return False
-            except Exception as exc:
-                error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
-                if error_code != "ParameterNotFound":
-                    raise
-
-            client.put_parameter(
-                Name=heartbeat_parameter_name,
-                Value=heartbeat_date,
-                Type="String",
-                Overwrite=True,
-            )
-            return True
-        except Exception:
-            raise
+        client.put_parameter(
+            Name=heartbeat_parameter_name,
+            Value=heartbeat_date,
+            Type="String",
+            Overwrite=True,
+        )
+        return True
 
     @staticmethod
     def goes_xrs_alert_stream():

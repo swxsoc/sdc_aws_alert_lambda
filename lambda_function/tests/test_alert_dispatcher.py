@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from botocore.exceptions import ClientError
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -33,12 +34,12 @@ class FakeSession:
         raise AssertionError(f"Unexpected service: {service_name}")
 
 
-class ParameterNotFoundError(Exception):
+class ParameterNotFoundError(ClientError):
     def __init__(self):
-        self.response = {
-            "Error": {"Code": "ParameterNotFound"},
-        }
-        super().__init__("parameter not found")
+        super().__init__(
+            error_response={"Error": {"Code": "ParameterNotFound"}},
+            operation_name="GetParameter",
+        )
 
 
 class FakeSSMClient:
