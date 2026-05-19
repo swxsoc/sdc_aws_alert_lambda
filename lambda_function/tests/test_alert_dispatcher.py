@@ -93,6 +93,7 @@ def alert_dispatcher_module(monkeypatch):
 
     fake_boto3 = types.ModuleType("boto3")
     fake_boto3.session = types.SimpleNamespace(Session=lambda: FakeSession())
+    fake_boto3.client = lambda service_name: FakeSession().client(service_name)
     fake_gcn_kafka = types.ModuleType("gcn_kafka")
     fake_gcn_kafka.Producer = FakeProducer
 

@@ -221,8 +221,7 @@ class AlertDispatcher:
         import boto3
         from botocore.exceptions import ClientError
 
-        session = boto3.session.Session()
-        client = session.client(service_name="ssm")
+        client = boto3.client("ssm")
         try:
             response = client.get_parameter(Name=heartbeat_parameter_name)
             if response["Parameter"]["Value"] == heartbeat_date:
