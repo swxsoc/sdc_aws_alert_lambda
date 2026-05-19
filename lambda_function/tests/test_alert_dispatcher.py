@@ -54,9 +54,11 @@ class FakeProducer:
 def clear_producer_instances():
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
+    AlertDispatcher._last_heartbeat_date_utc = None
     yield
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
+    AlertDispatcher._last_heartbeat_date_utc = None
 
 
 @pytest.fixture
@@ -245,6 +247,59 @@ def test_goes_alert_stream_sends_threshold_topic_heartbeats(
             if produced_topic == topic and payload["alert_type"].endswith("Heartbeat")
         )
         assert heartbeat_payload["description"].startswith("Heartbeat message")
+
+
+def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
+    monkeypatch, alert_dispatcher_module
+):
+    now_holder = [pd.Timestamp("2026-03-25T12:00:00Z")]
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:50:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now_holder[0].to_pydatetime()
+
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    dispatcher = AlertDispatcher("get_GOESXRS_alert_stream")
+    dispatcher.goes_xrs_alert_stream()
+    dispatcher.goes_xrs_alert_stream()
+
+    all_messages = [
+        message
+        for producer in FakeProducer.instances
+        for message in producer.messages
+    ]
+    heartbeats = [
+        (topic, payload)
+        for topic, payload in all_messages
+        if payload.get("alert_type", "").endswith("Heartbeat")
+    ]
+    assert len(heartbeats) == 6
+
+    now_holder[0] = pd.Timestamp("2026-03-26T01:00:00Z")
+    dispatcher.goes_xrs_alert_stream()
+    all_messages = [
+        message
+        for producer in FakeProducer.instances
+        for message in producer.messages
+    ]
+    heartbeats = [
+        (topic, payload)
+        for topic, payload in all_messages
+        if payload.get("alert_type", "").endswith("Heartbeat")
+    ]
+    assert len(heartbeats) == 12
 
 
 def test_goes_alert_stream_allows_noaa_feed_lag(monkeypatch, alert_dispatcher_module):

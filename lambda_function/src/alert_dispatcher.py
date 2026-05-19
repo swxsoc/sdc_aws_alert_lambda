@@ -71,6 +71,7 @@ class AlertDispatcher:
     :param function_name: The name of the function to execute based on the event
     :type function_name: str
     """
+    _last_heartbeat_date_utc: str | None = None
 
     def __init__(self, function_name: str) -> None:
         self.function_name = function_name
@@ -319,12 +320,15 @@ class AlertDispatcher:
         feed_stale_minutes = int(os.getenv("GOES_XRS_FEED_STALE_MINUTES", "15"))
 
         heartbeat_datetime = datetime.now(timezone.utc)
-        for severity in SEVERITIES:
-            _produce_heartbeat_message(
-                f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
-                severity,
-                heartbeat_datetime,
-            )
+        heartbeat_date = heartbeat_datetime.date().isoformat()
+        if AlertDispatcher._last_heartbeat_date_utc != heartbeat_date:
+            for severity in SEVERITIES:
+                _produce_heartbeat_message(
+                    f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
+                    severity,
+                    heartbeat_datetime,
+                )
+            AlertDispatcher._last_heartbeat_date_utc = heartbeat_date
 
         log.info("Getting GOES XRS data from NOAA")
         try:
