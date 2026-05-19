@@ -26,8 +26,33 @@ class FakeSecretsClient:
 
 class FakeSession:
     def client(self, service_name):
-        assert service_name == "secretsmanager"
-        return FakeSecretsClient()
+        if service_name == "secretsmanager":
+            return FakeSecretsClient()
+        if service_name == "s3":
+            return FakeS3Client()
+        raise AssertionError(f"Unexpected service: {service_name}")
+
+
+class PreconditionFailedError(Exception):
+    def __init__(self):
+        self.response = {
+            "Error": {"Code": "PreconditionFailed"},
+            "ResponseMetadata": {"HTTPStatusCode": 412},
+        }
+        super().__init__("precondition failed")
+
+
+class FakeS3Client:
+    reserved_keys = set()
+
+    def put_object(self, *, Bucket, Key, Body, IfNoneMatch):
+        assert Bucket
+        assert Body == b""
+        assert IfNoneMatch == "*"
+        object_key = (Bucket, Key)
+        if object_key in self.reserved_keys:
+            raise PreconditionFailedError()
+        self.reserved_keys.add(object_key)
 
 
 class FakeProducer:
@@ -54,11 +79,11 @@ class FakeProducer:
 def clear_producer_instances():
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
-    AlertDispatcher._last_heartbeat_date_utc = None
+    FakeS3Client.reserved_keys.clear()
     yield
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
-    AlertDispatcher._last_heartbeat_date_utc = None
+    FakeS3Client.reserved_keys.clear()
 
 
 @pytest.fixture
@@ -74,6 +99,8 @@ def alert_dispatcher_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "gcn_kafka", fake_gcn_kafka)
     monkeypatch.setenv("GCN_CLIENT_ID_SECRET_ARN", "arn:client-id")
     monkeypatch.setenv("GCN_CLIENT_SECRET_SECRET_ARN", "arn:client-secret")
+    monkeypatch.setenv("GOES_XRS_HEARTBEAT_STATE_BUCKET", "test-heartbeat-bucket")
+    monkeypatch.setenv("GOES_XRS_HEARTBEAT_STATE_PREFIX", "test-heartbeats")
     monkeypatch.delenv("GCN_CLIENT_ID", raising=False)
     monkeypatch.delenv("GCN_CLIENT_SECRET", raising=False)
     return alert_dispatcher_module

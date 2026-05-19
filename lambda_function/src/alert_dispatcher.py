@@ -71,8 +71,6 @@ class AlertDispatcher:
     :param function_name: The name of the function to execute based on the event
     :type function_name: str
     """
-    _last_heartbeat_date_utc: str | None = None
-
     def __init__(self, function_name: str) -> None:
         self.function_name = function_name
         self.function_mapping = {
@@ -209,6 +207,42 @@ class AlertDispatcher:
         return pd.read_json(io.BytesIO(payload))
 
     @staticmethod
+    def _reserve_daily_heartbeat_slot(heartbeat_datetime: datetime) -> bool:
+        heartbeat_bucket = os.getenv("GOES_XRS_HEARTBEAT_STATE_BUCKET")
+        if not heartbeat_bucket:
+            log.warning(
+                "Skipping GOES XRS threshold heartbeats because "
+                "GOES_XRS_HEARTBEAT_STATE_BUCKET is not configured"
+            )
+            return False
+
+        heartbeat_prefix = os.getenv(
+            "GOES_XRS_HEARTBEAT_STATE_PREFIX", "goes_xrs_heartbeat_state"
+        ).strip("/")
+        heartbeat_date = heartbeat_datetime.date().isoformat()
+        heartbeat_key = f"{heartbeat_prefix}/{heartbeat_date}.txt"
+
+        try:
+            import boto3
+
+            session = boto3.session.Session()
+            client = session.client(service_name="s3")
+            client.put_object(
+                Bucket=heartbeat_bucket,
+                Key=heartbeat_key,
+                Body=b"",
+                IfNoneMatch="*",
+            )
+            return True
+        except Exception as exc:
+            response = getattr(exc, "response", {})
+            error_code = response.get("Error", {}).get("Code")
+            http_status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
+            if error_code == "PreconditionFailed" or http_status == 412:
+                return False
+            raise
+
+    @staticmethod
     def goes_xrs_alert_stream():
         """
         Get latest GOES XRS data and generate kafka messages.
@@ -320,15 +354,13 @@ class AlertDispatcher:
         feed_stale_minutes = int(os.getenv("GOES_XRS_FEED_STALE_MINUTES", "15"))
 
         heartbeat_datetime = datetime.now(timezone.utc)
-        heartbeat_date = heartbeat_datetime.date().isoformat()
-        if AlertDispatcher._last_heartbeat_date_utc != heartbeat_date:
+        if AlertDispatcher._reserve_daily_heartbeat_slot(heartbeat_datetime):
             for severity in SEVERITIES:
                 _produce_heartbeat_message(
                     f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
                     severity,
                     heartbeat_datetime,
                 )
-            AlertDispatcher._last_heartbeat_date_utc = heartbeat_date
 
         log.info("Getting GOES XRS data from NOAA")
         try:
