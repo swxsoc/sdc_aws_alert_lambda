@@ -228,7 +228,7 @@ class AlertDispatcher:
             if response["Parameter"]["Value"] == heartbeat_date:
                 return False
         except ClientError as exc:
-            error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+            error_code = exc.response["Error"].get("Code")
             if error_code != "ParameterNotFound":
                 raise
 
