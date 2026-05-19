@@ -10,6 +10,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
+import boto3
+from botocore.exceptions import ClientError
+
 try:
     from swxsoc import log
 except ImportError:  # pragma: no cover - local fallback when SWxSOC is unavailable
@@ -147,8 +150,6 @@ class AlertDispatcher:
             )
 
         try:
-            import boto3
-
             session = boto3.session.Session()
             client = session.client(service_name="secretsmanager")
             for env_var, credential_env in secrets_to_load.items():
@@ -217,9 +218,6 @@ class AlertDispatcher:
             return False
 
         heartbeat_date = heartbeat_datetime.date().isoformat()
-
-        import boto3
-        from botocore.exceptions import ClientError
 
         client = boto3.client("ssm")
         try:

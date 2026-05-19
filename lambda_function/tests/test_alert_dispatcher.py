@@ -97,6 +97,7 @@ def alert_dispatcher_module(monkeypatch):
     fake_gcn_kafka = types.ModuleType("gcn_kafka")
     fake_gcn_kafka.Producer = FakeProducer
 
+    monkeypatch.setattr(alert_dispatcher_module, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "gcn_kafka", fake_gcn_kafka)
     monkeypatch.setenv("GCN_CLIENT_ID_SECRET_ARN", "arn:client-id")
