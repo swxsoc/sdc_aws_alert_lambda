@@ -208,38 +208,38 @@ class AlertDispatcher:
 
     @staticmethod
     def _reserve_daily_heartbeat_slot(heartbeat_datetime: datetime) -> bool:
-        heartbeat_bucket = os.getenv("GOES_XRS_HEARTBEAT_STATE_BUCKET")
-        if not heartbeat_bucket:
+        heartbeat_parameter_name = os.getenv("GOES_XRS_HEARTBEAT_STATE_PARAMETER")
+        if not heartbeat_parameter_name:
             log.warning(
                 "Skipping GOES XRS threshold heartbeats because "
-                "GOES_XRS_HEARTBEAT_STATE_BUCKET is not configured"
+                "GOES_XRS_HEARTBEAT_STATE_PARAMETER is not configured"
             )
             return False
 
-        heartbeat_prefix = os.getenv(
-            "GOES_XRS_HEARTBEAT_STATE_PREFIX", "goes_xrs_heartbeat_state"
-        ).strip("/")
         heartbeat_date = heartbeat_datetime.date().isoformat()
-        heartbeat_key = f"{heartbeat_prefix}/{heartbeat_date}.txt"
 
         try:
             import boto3
 
             session = boto3.session.Session()
-            client = session.client(service_name="s3")
-            client.put_object(
-                Bucket=heartbeat_bucket,
-                Key=heartbeat_key,
-                Body=b"",
-                IfNoneMatch="*",
+            client = session.client(service_name="ssm")
+            try:
+                response = client.get_parameter(Name=heartbeat_parameter_name)
+                if response["Parameter"]["Value"] == heartbeat_date:
+                    return False
+            except Exception as exc:
+                error_code = getattr(exc, "response", {}).get("Error", {}).get("Code")
+                if error_code != "ParameterNotFound":
+                    raise
+
+            client.put_parameter(
+                Name=heartbeat_parameter_name,
+                Value=heartbeat_date,
+                Type="String",
+                Overwrite=True,
             )
             return True
-        except Exception as exc:
-            response = getattr(exc, "response", {})
-            error_code = response.get("Error", {}).get("Code")
-            http_status = response.get("ResponseMetadata", {}).get("HTTPStatusCode")
-            if error_code == "PreconditionFailed" or http_status == 412:
-                return False
+        except Exception:
             raise
 
     @staticmethod

@@ -28,31 +28,31 @@ class FakeSession:
     def client(self, service_name):
         if service_name == "secretsmanager":
             return FakeSecretsClient()
-        if service_name == "s3":
-            return FakeS3Client()
+        if service_name == "ssm":
+            return FakeSSMClient()
         raise AssertionError(f"Unexpected service: {service_name}")
 
 
-class PreconditionFailedError(Exception):
+class ParameterNotFoundError(Exception):
     def __init__(self):
         self.response = {
-            "Error": {"Code": "PreconditionFailed"},
-            "ResponseMetadata": {"HTTPStatusCode": 412},
+            "Error": {"Code": "ParameterNotFound"},
         }
-        super().__init__("precondition failed")
+        super().__init__("parameter not found")
 
 
-class FakeS3Client:
-    reserved_keys = set()
+class FakeSSMClient:
+    parameter_values = {}
 
-    def put_object(self, *, Bucket, Key, Body, IfNoneMatch):
-        assert Bucket
-        assert Body == b""
-        assert IfNoneMatch == "*"
-        object_key = (Bucket, Key)
-        if object_key in self.reserved_keys:
-            raise PreconditionFailedError()
-        self.reserved_keys.add(object_key)
+    def get_parameter(self, *, Name):
+        if Name not in self.parameter_values:
+            raise ParameterNotFoundError()
+        return {"Parameter": {"Name": Name, "Value": self.parameter_values[Name]}}
+
+    def put_parameter(self, *, Name, Value, Type, Overwrite):
+        assert Type == "String"
+        assert Overwrite is True
+        self.parameter_values[Name] = Value
 
 
 class FakeProducer:
@@ -79,11 +79,11 @@ class FakeProducer:
 def clear_producer_instances():
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
-    FakeS3Client.reserved_keys.clear()
+    FakeSSMClient.parameter_values.clear()
     yield
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
-    FakeS3Client.reserved_keys.clear()
+    FakeSSMClient.parameter_values.clear()
 
 
 @pytest.fixture
@@ -99,8 +99,10 @@ def alert_dispatcher_module(monkeypatch):
     monkeypatch.setitem(sys.modules, "gcn_kafka", fake_gcn_kafka)
     monkeypatch.setenv("GCN_CLIENT_ID_SECRET_ARN", "arn:client-id")
     monkeypatch.setenv("GCN_CLIENT_SECRET_SECRET_ARN", "arn:client-secret")
-    monkeypatch.setenv("GOES_XRS_HEARTBEAT_STATE_BUCKET", "test-heartbeat-bucket")
-    monkeypatch.setenv("GOES_XRS_HEARTBEAT_STATE_PREFIX", "test-heartbeats")
+    monkeypatch.setenv(
+        "GOES_XRS_HEARTBEAT_STATE_PARAMETER",
+        "/test/goes_xrs/heartbeat_last_date_utc",
+    )
     monkeypatch.delenv("GCN_CLIENT_ID", raising=False)
     monkeypatch.delenv("GCN_CLIENT_SECRET", raising=False)
     return alert_dispatcher_module

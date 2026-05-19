@@ -26,8 +26,7 @@ Required environment variables:
 - `GOES_XRS_HTTP_TIMEOUT_SECONDS`: Optional NOAA HTTP read timeout. Defaults to `10`
 - `GOES_XRS_RECENT_WINDOW_MINUTES`: Optional NOAA sample window. Defaults to `5`
 - `GOES_XRS_FEED_STALE_MINUTES`: Optional NOAA feed staleness limit. Defaults to `15`
-- `GOES_XRS_HEARTBEAT_STATE_BUCKET`: S3 bucket used to coordinate once-per-day heartbeat publication across Lambda invocations
-- `GOES_XRS_HEARTBEAT_STATE_PREFIX`: Optional S3 key prefix for heartbeat state objects. Defaults to `goes_xrs_heartbeat_state`
+- `GOES_XRS_HEARTBEAT_STATE_PARAMETER`: AWS Systems Manager Parameter Store name used to store the last UTC heartbeat date for once-per-day publishing across stateless Lambda invocations
 
 Secrets can be stored as JSON using either lowercase or environment-style keys:
 
