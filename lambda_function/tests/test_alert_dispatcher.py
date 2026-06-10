@@ -76,6 +76,11 @@ class FakeProducer:
         return self.flush_result
 
 
+class FakeTelegrafResponse:
+    def close(self):
+        return None
+
+
 @pytest.fixture(autouse=True)
 def clear_producer_instances():
     FakeProducer.instances.clear()
@@ -111,6 +116,27 @@ def alert_dispatcher_module(monkeypatch):
     return alert_dispatcher_module
 
 
+@pytest.fixture
+def telegraf_posts(monkeypatch, alert_dispatcher_module):
+    posts = []
+
+    def fake_urlopen(request, timeout=None):
+        posts.append(
+            {
+                "url": request.full_url,
+                "data": request.data.decode(),
+                "timeout": timeout,
+                "content_type": request.headers["Content-type"],
+            }
+        )
+        return FakeTelegrafResponse()
+
+    monkeypatch.setenv("TELEGRAF_ALERT_INGEST_URL", "http://telegraf:8186/alerts")
+    monkeypatch.setenv("TELEGRAF_ALERT_INGEST_TIMEOUT_SECONDS", "1.5")
+    monkeypatch.setattr(alert_dispatcher_module.urllib.request, "urlopen", fake_urlopen)
+    return posts
+
+
 def test_handle_event_rejects_missing_resources():
     response = handle_event({}, {})
     assert response["statusCode"] == 500
@@ -133,7 +159,9 @@ def test_secret_parser_accepts_uppercase_json_keys():
         )
     )
 
-    assert AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    assert (
+        AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    )
     assert (
         AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_SECRET")
         == "client-secret-value"
@@ -148,7 +176,9 @@ def test_secret_parser_accepts_dotenv_text():
         """
     )
 
-    assert AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    assert (
+        AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_ID") == "client-id-value"
+    )
     assert (
         AlertDispatcher._get_secret_value(secret, "GCN_CLIENT_SECRET")
         == "client-secret-value"
@@ -169,7 +199,7 @@ def test_load_secrets_skips_boto3_when_credentials_are_already_set(monkeypatch):
 
 
 def test_goes_alert_stream_publishes_flux_and_threshold_alert(
-    monkeypatch, alert_dispatcher_module
+    monkeypatch, alert_dispatcher_module, telegraf_posts
 ):
     now = pd.Timestamp("2026-03-25T12:00:00Z")
     frame = pd.DataFrame(
@@ -211,6 +241,15 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(
     assert alert_payload["alert_tense"] == "current"
     assert alert_payload["alert_type"] == "C5 Flare Alert"
 
+    posted_lines = [post["data"] for post in telegraf_posts]
+    assert any(line.startswith("goes_xrs_flux,") for line in posted_lines)
+    assert any(
+        line.startswith("goes_xrs_alert,") and "alert_type=C5\\ Flare\\ Alert" in line
+        for line in posted_lines
+    )
+    assert all(post["url"] == "http://telegraf:8186/alerts" for post in telegraf_posts)
+    assert all(post["timeout"] == 1.5 for post in telegraf_posts)
+
 
 def test_goes_alert_stream_limits_kafka_flush_time(
     monkeypatch, alert_dispatcher_module
@@ -243,7 +282,7 @@ def test_goes_alert_stream_limits_kafka_flush_time(
 
 
 def test_goes_alert_stream_sends_threshold_topic_heartbeats(
-    monkeypatch, alert_dispatcher_module
+    monkeypatch, alert_dispatcher_module, telegraf_posts
 ):
     now = pd.Timestamp("2026-03-25T12:00:00Z")
     frame = pd.DataFrame(
@@ -280,6 +319,40 @@ def test_goes_alert_stream_sends_threshold_topic_heartbeats(
         )
         assert heartbeat_payload["description"].startswith("Heartbeat message")
 
+    heartbeat_lines = [
+        post["data"]
+        for post in telegraf_posts
+        if "heartbeat=true" in post["data"]
+        and post["data"].startswith("goes_xrs_alert,")
+    ]
+    assert len(heartbeat_lines) == len(expected_topics)
+
+
+def test_telegraf_alert_emit_escapes_line_protocol(
+    monkeypatch, alert_dispatcher_module
+):
+    posts = []
+
+    def fake_urlopen(request, timeout=None):
+        posts.append(request.data.decode())
+        return FakeTelegrafResponse()
+
+    monkeypatch.setenv("TELEGRAF_ALERT_INGEST_URL", "http://telegraf:8186/alerts")
+    monkeypatch.setattr(alert_dispatcher_module.urllib.request, "urlopen", fake_urlopen)
+
+    AlertDispatcher._emit_goes_alert_metric(
+        "gcn.notices.swxsoc.goes_xrs_c5flare_alert",
+        {
+            "description": 'GOES XRS flux exceeded C5 threshold "now"',
+            "alert_datetime": "2026-03-25T12:00:00+00:00",
+            "alert_type": "C5 Flare Alert",
+        },
+    )
+
+    assert posts == [
+        'goes_xrs_alert,source=sdc_aws_alert_lambda,topic=gcn.notices.swxsoc.goes_xrs_c5flare_alert,alert_type=C5\\ Flare\\ Alert,severity=C5 count=1i,heartbeat=false,ended=false,description="GOES XRS flux exceeded C5 threshold \\"now\\"" 1774440000000000000'
+    ]
+
 
 def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
     monkeypatch, alert_dispatcher_module
@@ -308,9 +381,7 @@ def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
     dispatcher.goes_xrs_alert_stream()
 
     all_messages = [
-        message
-        for producer in FakeProducer.instances
-        for message in producer.messages
+        message for producer in FakeProducer.instances for message in producer.messages
     ]
     heartbeats = [
         (topic, payload)
@@ -322,9 +393,7 @@ def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
     now_holder[0] = pd.Timestamp("2026-03-26T01:00:00Z")
     dispatcher.goes_xrs_alert_stream()
     all_messages = [
-        message
-        for producer in FakeProducer.instances
-        for message in producer.messages
+        message for producer in FakeProducer.instances for message in producer.messages
     ]
     heartbeats = [
         (topic, payload)
@@ -395,7 +464,7 @@ def test_goes_alert_stream_publishes_threshold_end_alert(
     now = pd.Timestamp("2026-03-25T12:00:00Z")
     frame = pd.DataFrame(
         [
-            {"time_tag": "2026-03-25T11:54:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:52:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
             {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
             {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
         ]
@@ -420,7 +489,9 @@ def test_goes_alert_stream_publishes_threshold_end_alert(
         if topic == "gcn.notices.swxsoc.goes_xrs_c5flare_alert"
         and payload["alert_type"] == "C5 Flare Alert End"
     )
-    assert end_payload["description"] == "GOES XRS flux has decreased below C5 threshold"
+    assert (
+        end_payload["description"] == "GOES XRS flux has decreased below C5 threshold"
+    )
 
 
 def test_handle_event_dispatches_matching_rule(monkeypatch, alert_dispatcher_module):
@@ -430,7 +501,11 @@ def test_handle_event_dispatches_matching_rule(monkeypatch, alert_dispatcher_mod
         called["executed"] = True
 
     monkeypatch.setattr(AlertDispatcher, "execute", fake_execute)
-    event = {"resources": ["arn:aws:events:us-east-1:123456789012:rule/get_GOESXRS_alert_stream"]}
+    event = {
+        "resources": [
+            "arn:aws:events:us-east-1:123456789012:rule/get_GOESXRS_alert_stream"
+        ]
+    }
 
     response = handle_event(event, {})
 

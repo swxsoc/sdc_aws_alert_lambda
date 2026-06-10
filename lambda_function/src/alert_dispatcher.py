@@ -1,7 +1,9 @@
 """
 This module dispatches alert functions based on the EventBridge rule name.
 """
+
 import io
+import datetime as datetime_module
 import json
 import os
 import re
@@ -74,6 +76,7 @@ class AlertDispatcher:
     :param function_name: The name of the function to execute based on the event
     :type function_name: str
     """
+
     def __init__(self, function_name: str) -> None:
         self.function_name = function_name
         self.function_mapping = {
@@ -107,9 +110,7 @@ class AlertDispatcher:
             raise ValueError("SecretString must be a JSON object or dotenv-style text")
 
         return {
-            str(key): str(value)
-            for key, value in secret.items()
-            if value is not None
+            str(key): str(value) for key, value in secret.items() if value is not None
         }
 
     @staticmethod
@@ -206,6 +207,100 @@ class AlertDispatcher:
             extra={"elapsed_seconds": time.monotonic() - start_time},
         )
         return pd.read_json(io.BytesIO(payload))
+
+    @staticmethod
+    def _escape_line_protocol_tag(value: Any) -> str:
+        return (
+            str(value)
+            .replace("\\", "\\\\")
+            .replace(" ", "\\ ")
+            .replace(",", "\\,")
+            .replace("=", "\\=")
+        )
+
+    @staticmethod
+    def _escape_line_protocol_string(value: Any) -> str:
+        return str(value).replace("\\", "\\\\").replace('"', '\\"')
+
+    @staticmethod
+    def _line_protocol_timestamp(alert_datetime: str) -> int | None:
+        try:
+            parsed = datetime_module.datetime.fromisoformat(
+                alert_datetime.replace("Z", "+00:00")
+            )
+        except ValueError:
+            return None
+        return int(parsed.timestamp() * 1_000_000_000)
+
+    @staticmethod
+    def _post_telegraf_line(line: str) -> None:
+        ingest_url = os.getenv("TELEGRAF_ALERT_INGEST_URL")
+        if not ingest_url:
+            return
+
+        timeout_seconds = float(os.getenv("TELEGRAF_ALERT_INGEST_TIMEOUT_SECONDS", "2"))
+        request = urllib.request.Request(
+            ingest_url,
+            data=line.encode(),
+            headers={"Content-Type": "text/plain; charset=utf-8"},
+            method="POST",
+        )
+        try:
+            urllib.request.urlopen(request, timeout=timeout_seconds).close()
+        except Exception:
+            log.warning(
+                "Failed to post GOES alert metric to Telegraf",
+                exc_info=True,
+                extra={"telegraf_ingest_url": ingest_url},
+            )
+
+    @staticmethod
+    def _emit_goes_flux_metric(topic: str, payload: Dict[str, Any]) -> None:
+        alert_datetime = payload.get("alert_datetime")
+        timestamp = (
+            AlertDispatcher._line_protocol_timestamp(alert_datetime)
+            if alert_datetime
+            else None
+        )
+        topic_tag = AlertDispatcher._escape_line_protocol_tag(topic)
+        line = f"goes_xrs_flux,source=sdc_aws_alert_lambda,topic={topic_tag} flux={float(payload['flux'])}"
+        if timestamp is not None:
+            line = f"{line} {timestamp}"
+        AlertDispatcher._post_telegraf_line(line)
+
+    @staticmethod
+    def _emit_goes_alert_metric(topic: str, payload: Dict[str, Any]) -> None:
+        alert_type = str(payload.get("alert_type", "unknown"))
+        severity = alert_type.split(" ", 1)[0] if alert_type else "unknown"
+        alert_datetime = payload.get("alert_datetime")
+        timestamp = (
+            AlertDispatcher._line_protocol_timestamp(alert_datetime)
+            if alert_datetime
+            else None
+        )
+
+        tags = {
+            "source": "sdc_aws_alert_lambda",
+            "topic": topic,
+            "alert_type": alert_type,
+            "severity": severity,
+        }
+        tag_text = ",".join(
+            f"{key}={AlertDispatcher._escape_line_protocol_tag(value)}"
+            for key, value in tags.items()
+        )
+        description = AlertDispatcher._escape_line_protocol_string(
+            payload.get("description", "")
+        )
+        heartbeat = str(alert_type.endswith("Heartbeat")).lower()
+        ended = str(alert_type.endswith("End")).lower()
+        line = (
+            f"goes_xrs_alert,{tag_text} "
+            f'count=1i,heartbeat={heartbeat},ended={ended},description="{description}"'
+        )
+        if timestamp is not None:
+            line = f"{line} {timestamp}"
+        AlertDispatcher._post_telegraf_line(line)
 
     @staticmethod
     def _reserve_daily_heartbeat_slot(heartbeat_datetime: datetime) -> bool:
@@ -319,6 +414,7 @@ class AlertDispatcher:
             data_json = json.dumps(data).encode()
             get_producer().produce(topic, data_json)
             flush_producer()
+            AlertDispatcher._emit_goes_alert_metric(topic, data)
 
         def _produce_heartbeat_message(
             topic: str, severity: str, heartbeat_datetime: datetime
@@ -336,6 +432,7 @@ class AlertDispatcher:
             data_json = json.dumps(data).encode()
             get_producer().produce(topic, data_json)
             flush_producer()
+            AlertDispatcher._emit_goes_alert_metric(topic, data)
 
         SEVERITIES = {
             "X10": 1e-3,
@@ -402,9 +499,15 @@ class AlertDispatcher:
             data_json = json.dumps(data).encode()
             get_producer().produce("gcn.notices.swxsoc.goes_xrs_flux", data_json)
             flush_producer()
+            AlertDispatcher._emit_goes_flux_metric(
+                "gcn.notices.swxsoc.goes_xrs_flux", data
+            )
 
             # check if the flux exceeded any severity threshold
-            if any(average_new_flux >= value for value in SEVERITIES.values()) and average_new_flux > old_flux:
+            if (
+                any(average_new_flux >= value for value in SEVERITIES.values())
+                and average_new_flux > old_flux
+            ):
                 for severity, threshold in SEVERITIES.items():
                     if average_new_flux >= threshold and old_flux < threshold:
                         log.info(f"New flux exceeds {severity} threshold")

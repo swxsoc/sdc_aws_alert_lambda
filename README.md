@@ -27,6 +27,8 @@ Required environment variables:
 - `GOES_XRS_RECENT_WINDOW_MINUTES`: Optional NOAA sample window. Defaults to `5`
 - `GOES_XRS_FEED_STALE_MINUTES`: Optional NOAA feed staleness limit. Defaults to `15`
 - `GOES_XRS_HEARTBEAT_STATE_PARAMETER`: AWS Systems Manager Parameter Store name used to store the last UTC heartbeat date for once-per-day publishing across stateless Lambda invocations
+- `TELEGRAF_ALERT_INGEST_URL`: Optional Telegraf HTTP listener endpoint for GOES XRS alert capture, for example `http://<telegraf-host>:8186/alerts`
+- `TELEGRAF_ALERT_INGEST_TIMEOUT_SECONDS`: Optional Telegraf post timeout. Defaults to `2`
 
 Secrets can be stored as JSON using either lowercase or environment-style keys:
 
@@ -54,6 +56,23 @@ ARN.
 
 If you provide `GCN_CLIENT_ID` and `GCN_CLIENT_SECRET` directly as Lambda
 environment variables, the Lambda skips Secrets Manager.
+
+When `TELEGRAF_ALERT_INGEST_URL` is configured, the Lambda posts Influx line
+protocol measurements to Telegraf after successful GCN publication:
+
+- `goes_xrs_flux` for the latest GOES XRS flux sample
+- `goes_xrs_alert` for threshold start, threshold end, and heartbeat messages
+
+Telegraf post failures are logged as warnings and do not block GCN delivery.
+
+For deployment, point the Lambda at the internal Telegraf listener:
+
+```text
+TELEGRAF_ALERT_INGEST_URL=http://<telegraf-host>:8186/alerts
+```
+
+Use a private hostname, private IP, or load-balanced internal endpoint that the
+Lambda can reach. Avoid exposing the Telegraf listener publicly.
 
 ## Local Validation
 
