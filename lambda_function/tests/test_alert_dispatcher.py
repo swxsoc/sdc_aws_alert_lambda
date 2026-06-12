@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pandas as pd
 import pytest
+from botocore.exceptions import ClientError
 
 
 SRC_DIR = Path(__file__).resolve().parents[1] / "src"
@@ -26,8 +27,33 @@ class FakeSecretsClient:
 
 class FakeSession:
     def client(self, service_name):
-        assert service_name == "secretsmanager"
-        return FakeSecretsClient()
+        if service_name == "secretsmanager":
+            return FakeSecretsClient()
+        if service_name == "ssm":
+            return FakeSSMClient()
+        raise AssertionError(f"Unexpected service: {service_name}")
+
+
+class ParameterNotFoundError(ClientError):
+    def __init__(self):
+        super().__init__(
+            error_response={"Error": {"Code": "ParameterNotFound"}},
+            operation_name="GetParameter",
+        )
+
+
+class FakeSSMClient:
+    parameter_values = {}
+
+    def get_parameter(self, *, Name):
+        if Name not in self.parameter_values:
+            raise ParameterNotFoundError()
+        return {"Parameter": {"Name": Name, "Value": self.parameter_values[Name]}}
+
+    def put_parameter(self, *, Name, Value, Type, Overwrite):
+        assert Type == "String"
+        assert Overwrite is True
+        self.parameter_values[Name] = Value
 
 
 class FakeProducer:
@@ -54,9 +80,11 @@ class FakeProducer:
 def clear_producer_instances():
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
+    FakeSSMClient.parameter_values.clear()
     yield
     FakeProducer.instances.clear()
     FakeProducer.flush_result = 0
+    FakeSSMClient.parameter_values.clear()
 
 
 @pytest.fixture
@@ -65,13 +93,19 @@ def alert_dispatcher_module(monkeypatch):
 
     fake_boto3 = types.ModuleType("boto3")
     fake_boto3.session = types.SimpleNamespace(Session=lambda: FakeSession())
+    fake_boto3.client = lambda service_name: FakeSession().client(service_name)
     fake_gcn_kafka = types.ModuleType("gcn_kafka")
     fake_gcn_kafka.Producer = FakeProducer
 
+    monkeypatch.setattr(alert_dispatcher_module, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "boto3", fake_boto3)
     monkeypatch.setitem(sys.modules, "gcn_kafka", fake_gcn_kafka)
     monkeypatch.setenv("GCN_CLIENT_ID_SECRET_ARN", "arn:client-id")
     monkeypatch.setenv("GCN_CLIENT_SECRET_SECRET_ARN", "arn:client-secret")
+    monkeypatch.setenv(
+        "GOES_XRS_HEARTBEAT_STATE_PARAMETER",
+        "/test/goes_xrs/heartbeat_last_date_utc",
+    )
     monkeypatch.delenv("GCN_CLIENT_ID", raising=False)
     monkeypatch.delenv("GCN_CLIENT_SECRET", raising=False)
     return alert_dispatcher_module
@@ -172,6 +206,7 @@ def test_goes_alert_stream_publishes_flux_and_threshold_alert(
         payload
         for topic, payload in producer.messages
         if topic == "gcn.notices.swxsoc.goes_xrs_c5flare_alert"
+        and payload["alert_type"] == "C5 Flare Alert"
     )
     assert alert_payload["alert_tense"] == "current"
     assert alert_payload["alert_type"] == "C5 Flare Alert"
@@ -205,6 +240,98 @@ def test_goes_alert_stream_limits_kafka_flush_time(
         AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
 
     assert FakeProducer.instances[-1].flush_timeout == 2
+
+
+def test_goes_alert_stream_sends_threshold_topic_heartbeats(
+    monkeypatch, alert_dispatcher_module
+):
+    now = pd.Timestamp("2026-03-25T12:00:00Z")
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:50:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now.to_pydatetime()
+
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
+
+    producer = FakeProducer.instances[-1]
+    expected_topics = [
+        f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert"
+        for severity in ["X10", "X5", "X1", "M5", "M1", "C5"]
+    ]
+
+    for topic in expected_topics:
+        heartbeat_payload = next(
+            payload
+            for produced_topic, payload in producer.messages
+            if produced_topic == topic and payload["alert_type"].endswith("Heartbeat")
+        )
+        assert heartbeat_payload["description"].startswith("Heartbeat message")
+
+
+def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
+    monkeypatch, alert_dispatcher_module
+):
+    now_holder = [pd.Timestamp("2026-03-25T12:00:00Z")]
+    frame = pd.DataFrame(
+        [
+            {"time_tag": "2026-03-25T11:50:00Z", "energy": "0.1-0.8nm", "flux": 4e-6},
+            {"time_tag": "2026-03-25T11:56:00Z", "energy": "0.1-0.8nm", "flux": 6e-6},
+            {"time_tag": "2026-03-25T11:58:00Z", "energy": "0.1-0.8nm", "flux": 7e-6},
+        ]
+    )
+
+    class FakeDateTime:
+        @staticmethod
+        def now(tz=None):
+            return now_holder[0].to_pydatetime()
+
+    monkeypatch.setattr(
+        AlertDispatcher, "_read_goes_xrs_data", staticmethod(lambda: frame.copy())
+    )
+    monkeypatch.setattr(alert_dispatcher_module, "datetime", FakeDateTime)
+
+    dispatcher = AlertDispatcher("get_GOESXRS_alert_stream")
+    dispatcher.goes_xrs_alert_stream()
+    dispatcher.goes_xrs_alert_stream()
+
+    all_messages = [
+        message
+        for producer in FakeProducer.instances
+        for message in producer.messages
+    ]
+    heartbeats = [
+        (topic, payload)
+        for topic, payload in all_messages
+        if payload.get("alert_type", "").endswith("Heartbeat")
+    ]
+    assert len(heartbeats) == 6
+
+    now_holder[0] = pd.Timestamp("2026-03-26T01:00:00Z")
+    dispatcher.goes_xrs_alert_stream()
+    all_messages = [
+        message
+        for producer in FakeProducer.instances
+        for message in producer.messages
+    ]
+    heartbeats = [
+        (topic, payload)
+        for topic, payload in all_messages
+        if payload.get("alert_type", "").endswith("Heartbeat")
+    ]
+    assert len(heartbeats) == 12
 
 
 def test_goes_alert_stream_allows_noaa_feed_lag(monkeypatch, alert_dispatcher_module):
@@ -256,7 +383,10 @@ def test_goes_alert_stream_skips_stale_noaa_feed(monkeypatch, alert_dispatcher_m
 
     AlertDispatcher("get_GOESXRS_alert_stream").goes_xrs_alert_stream()
 
-    assert FakeProducer.instances == []
+    producer = FakeProducer.instances[-1]
+    topics = [topic for topic, _ in producer.messages]
+    assert "gcn.notices.swxsoc.goes_xrs_flux" not in topics
+    assert "gcn.notices.swxsoc.goes_xrs_c5flare_alert" in topics
 
 
 def test_goes_alert_stream_publishes_threshold_end_alert(

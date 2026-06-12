@@ -10,6 +10,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict
 
+import boto3
+from botocore.exceptions import ClientError
+
 try:
     from swxsoc import log
 except ImportError:  # pragma: no cover - local fallback when SWxSOC is unavailable
@@ -71,7 +74,6 @@ class AlertDispatcher:
     :param function_name: The name of the function to execute based on the event
     :type function_name: str
     """
-
     def __init__(self, function_name: str) -> None:
         self.function_name = function_name
         self.function_mapping = {
@@ -148,8 +150,6 @@ class AlertDispatcher:
             )
 
         try:
-            import boto3
-
             session = boto3.session.Session()
             client = session.client(service_name="secretsmanager")
             for env_var, credential_env in secrets_to_load.items():
@@ -206,6 +206,36 @@ class AlertDispatcher:
             extra={"elapsed_seconds": time.monotonic() - start_time},
         )
         return pd.read_json(io.BytesIO(payload))
+
+    @staticmethod
+    def _reserve_daily_heartbeat_slot(heartbeat_datetime: datetime) -> bool:
+        heartbeat_parameter_name = os.getenv("GOES_XRS_HEARTBEAT_STATE_PARAMETER")
+        if not heartbeat_parameter_name:
+            log.warning(
+                "Skipping GOES XRS threshold heartbeats because "
+                "GOES_XRS_HEARTBEAT_STATE_PARAMETER is not configured"
+            )
+            return False
+
+        heartbeat_date = heartbeat_datetime.date().isoformat()
+
+        client = boto3.client("ssm")
+        try:
+            response = client.get_parameter(Name=heartbeat_parameter_name)
+            if response["Parameter"]["Value"] == heartbeat_date:
+                return False
+        except ClientError as exc:
+            error_code = exc.response["Error"].get("Code")
+            if error_code != "ParameterNotFound":
+                raise
+
+        client.put_parameter(
+            Name=heartbeat_parameter_name,
+            Value=heartbeat_date,
+            Type="String",
+            Overwrite=True,
+        )
+        return True
 
     @staticmethod
     def goes_xrs_alert_stream():
@@ -290,6 +320,23 @@ class AlertDispatcher:
             get_producer().produce(topic, data_json)
             flush_producer()
 
+        def _produce_heartbeat_message(
+            topic: str, severity: str, heartbeat_datetime: datetime
+        ) -> None:
+            data = {
+                "$schema": "https://json-schema.org/draft/2020-12/schema",
+                "title": "Alert",
+                "description": (
+                    f"Heartbeat message to keep GOES XRS {severity} flare alert topic active"
+                ),
+                "alert_datetime": heartbeat_datetime.isoformat(),
+                "alert_tense": "current",
+                "alert_type": f"{severity} Flare Alert Heartbeat",
+            }
+            data_json = json.dumps(data).encode()
+            get_producer().produce(topic, data_json)
+            flush_producer()
+
         SEVERITIES = {
             "X10": 1e-3,
             "X5": 5e-4,
@@ -300,6 +347,15 @@ class AlertDispatcher:
         }
         recent_window_minutes = int(os.getenv("GOES_XRS_RECENT_WINDOW_MINUTES", "5"))
         feed_stale_minutes = int(os.getenv("GOES_XRS_FEED_STALE_MINUTES", "15"))
+
+        heartbeat_datetime = datetime.now(timezone.utc)
+        if AlertDispatcher._reserve_daily_heartbeat_slot(heartbeat_datetime):
+            for severity in SEVERITIES:
+                _produce_heartbeat_message(
+                    f"gcn.notices.swxsoc.goes_xrs_{severity.lower()}flare_alert",
+                    severity,
+                    heartbeat_datetime,
+                )
 
         log.info("Getting GOES XRS data from NOAA")
         try:

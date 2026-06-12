@@ -10,6 +10,7 @@ This repository packages a focused alerting Lambda that:
 - fetches recent GOES XRS flux data from NOAA
 - publishes the latest flux stream to GCN Kafka
 - emits flare threshold crossing alerts when flux rises above or falls below configured severities
+- sends heartbeat messages for GOES XRS flare threshold topics to keep cached GCN topics active
 
 ## Runtime Inputs
 
@@ -25,6 +26,7 @@ Required environment variables:
 - `GOES_XRS_HTTP_TIMEOUT_SECONDS`: Optional NOAA HTTP read timeout. Defaults to `10`
 - `GOES_XRS_RECENT_WINDOW_MINUTES`: Optional NOAA sample window. Defaults to `5`
 - `GOES_XRS_FEED_STALE_MINUTES`: Optional NOAA feed staleness limit. Defaults to `15`
+- `GOES_XRS_HEARTBEAT_STATE_PARAMETER`: AWS Systems Manager Parameter Store name used to store the last UTC heartbeat date for once-per-day publishing across stateless Lambda invocations
 
 Secrets can be stored as JSON using either lowercase or environment-style keys:
 
