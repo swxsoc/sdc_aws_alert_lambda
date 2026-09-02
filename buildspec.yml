@@ -39,14 +39,6 @@ phases:
         printf '  Source ref  : %s\n' "${CODEBUILD_SOURCE_VERSION:-unknown}"
         printf '  Commit      : %.12s\n' "${BANNER_COMMIT}"
         printf '%s\n\n' '================================================================================'
-
-        case "${BANNER_SOURCE}" in
-          branch/main|main|refs/heads/main) ;;
-          pr/*|refs/pull/*|branch/*|refs/heads/*)
-            echo "Non-main build: skipping image publishing"
-            exit 0
-            ;;
-        esac
       - set -euo pipefail
       - echo Installing CI/CD Dependencies...
       - python -m pip install --upgrade pip
@@ -64,6 +56,14 @@ phases:
     
   build:
     commands:
+      - |
+        case "${CODEBUILD_WEBHOOK_TRIGGER:-${CODEBUILD_SOURCE_VERSION:-manual}}" in
+          branch/main|main|refs/heads/main|tag/*|refs/tags/*) ;;
+          pr/*|refs/pull/*|branch/*|refs/heads/*)
+            echo "Non-main build: dependency validation complete; skipping image publishing"
+            exit 0
+            ;;
+        esac
       - set -euo pipefail
       - REGION=$ECR_REGION
       - ACCOUNT_ID=$(aws sts get-caller-identity --query 'Account' --output text)
@@ -109,10 +109,4 @@ phases:
 
   post_build:
     commands:
-      - |
-        set -euo pipefail
-        if [ "${CODEBUILD_BUILD_SUCCEEDING:-0}" = "1" ]; then
-          echo Build Successful - Lambda Successfully Built and Pushed to ECR
-        else
-          echo Build Failed - Lambda image was not built or pushed to ECR
-        fi
+      - echo "Build phase finished on $(date -u +%Y-%m-%dT%H:%M:%SZ)"
