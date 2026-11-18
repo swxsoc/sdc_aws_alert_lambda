@@ -323,14 +323,17 @@ class AlertDispatcher:
         def _produce_heartbeat_message(
             topic: str, severity: str, heartbeat_datetime: datetime
         ) -> None:
+            # A heartbeat shares its topic with real flare alerts, so it is
+            # marked with GCN's "test" tense. Consumers act only on "current".
             data = {
                 "$schema": "https://json-schema.org/draft/2020-12/schema",
                 "title": "Alert",
                 "description": (
-                    f"Heartbeat message to keep GOES XRS {severity} flare alert topic active"
+                    f"Heartbeat to keep the GOES XRS {severity} flare alert topic "
+                    "active. Not a flare."
                 ),
                 "alert_datetime": heartbeat_datetime.isoformat(),
-                "alert_tense": "current",
+                "alert_tense": "test",
                 "alert_type": f"{severity} Flare Alert Heartbeat",
             }
             data_json = json.dumps(data).encode()

@@ -278,7 +278,9 @@ def test_goes_alert_stream_sends_threshold_topic_heartbeats(
             for produced_topic, payload in producer.messages
             if produced_topic == topic and payload["alert_type"].endswith("Heartbeat")
         )
-        assert heartbeat_payload["description"].startswith("Heartbeat message")
+        assert heartbeat_payload["alert_tense"] == "test"
+        assert heartbeat_payload["description"].startswith("Heartbeat to keep")
+        assert heartbeat_payload["description"].endswith("Not a flare.")
 
 
 def test_goes_alert_stream_sends_heartbeat_only_once_per_day(
