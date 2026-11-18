@@ -12,6 +12,11 @@ This repository packages a focused alerting Lambda that:
 - emits flare threshold crossing alerts when flux rises above or falls below configured severities
 - sends heartbeat messages for GOES XRS flare threshold topics to keep cached GCN topics active
 
+Heartbeats are published once per UTC day on the same topics as real flare
+alerts. They carry `"alert_tense": "test"`, GCN's value for a test trigger, and
+real alerts carry `"alert_tense": "current"`. Consumers should act only on
+`current` messages.
+
 ## Runtime Inputs
 
 The Lambda expects EventBridge events with a rule name that maps to a function in the alert dispatcher.
